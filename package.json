@@ -5,18 +5,18 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
+    "build": "node scripts/sync-sharepoint.js && vite build",
     "lint": "eslint .",
     "preview": "vite preview",
-    "sync": "node scripts/sync-sharepoint.js",
-    "sync:build": "node scripts/sync-sharepoint.js && vite build",
-    "extract": "node scripts/extract-local.js",
-    "extract:build": "node scripts/extract-local.js && vite build"
+    "sync": "node scripts/sync-sharepoint.js"
   },
   "dependencies": {
+    "@azure/msal-browser": "^5.5.0",
+    "@azure/msal-react": "^5.0.7",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
-    "recharts": "^3.8.0"
+    "recharts": "^3.8.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",
@@ -30,7 +30,6 @@
     "globals": "^17.4.0",
     "node-sp-auth": "^3.0.9",
     "sp-request": "^3.0.0",
-    "vite": "^8.0.0",
-    "xlsx": "^0.18.5"
+    "vite": "^8.0.0"
   }
 }

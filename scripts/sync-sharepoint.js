@@ -1,159 +1,59 @@
 /**
- * Sincronização com SharePoint via Microsoft Graph API
- * Usa Device Code flow (primeira vez) + Refresh Token (automático depois).
+ * Sincronização com SharePoint via Microsoft Graph API (Client Credentials)
+ * Baixa o NEW_BD.xlsm e extrai os dados em JSONs para o dashboard.
  *
  * Uso: node scripts/sync-sharepoint.js
- *
- * Primeira execução: abre URL no navegador para login.
- * Próximas execuções: automático via refresh token salvo em .token-cache.json
  */
 
 import "dotenv/config";
-import { writeFile, readFile } from "fs/promises";
+import { writeFile } from "fs/promises";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
-import { existsSync } from "fs";
 import XLSX from "xlsx";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
-const TOKEN_CACHE = join(ROOT, ".token-cache.json");
+const GRAPH = "https://graph.microsoft.com/v1.0";
 
-const { SHAREPOINT_SITE_URL, SHAREPOINT_TENANT_ID, SHAREPOINT_CLIENT_ID } = process.env;
-
-const TENANT_ID = SHAREPOINT_TENANT_ID || "fee1b506-24b6-444a-919e-83df9442dc5d";
-const CLIENT_ID = SHAREPOINT_CLIENT_ID || "6a0d5571-1505-4d8b-98e5-f1d3a9352b4b";
-const SCOPES = "Sites.Read.All Files.Read.All offline_access";
+const {
+  SHAREPOINT_TENANT_ID,
+  SHAREPOINT_CLIENT_ID,
+  SHAREPOINT_CLIENT_SECRET,
+  SHAREPOINT_HOSTNAME,
+  SHAREPOINT_SITE_PATH,
+  SHAREPOINT_DRIVE_ID,
+  SHAREPOINT_FILE_PATH,
+} = process.env;
 
 // ═══════════════════════════════════════════
-//  1. AUTENTICAÇÃO
+//  1. AUTENTICAÇÃO (Client Credentials)
 // ═══════════════════════════════════════════
 
-async function loadCachedToken() {
-  if (!existsSync(TOKEN_CACHE)) return null;
-  try {
-    const data = JSON.parse(await readFile(TOKEN_CACHE, "utf-8"));
-    if (data.refresh_token) return data;
-  } catch {}
-  return null;
-}
+async function getAccessToken() {
+  console.log("Autenticando via Client Credentials...");
 
-async function saveCachedToken(data) {
-  await writeFile(TOKEN_CACHE, JSON.stringify({
-    access_token: data.access_token,
-    refresh_token: data.refresh_token,
-    expires_at: Date.now() + (data.expires_in * 1000),
-  }, null, 2));
-}
-
-async function refreshAccessToken(refreshToken) {
-  const res = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: CLIENT_ID,
-      refresh_token: refreshToken,
-      scope: SCOPES,
-    }).toString(),
-  });
-
-  const data = await res.json();
-  if (data.error) return null;
-  return data;
-}
-
-async function deviceCodeLogin() {
-  // 1. Solicitar device code
-  console.log("\n  Iniciando login via Device Code...\n");
-
-  const codeRes = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/devicecode`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      scope: SCOPES,
-    }).toString(),
-  });
-
-  const codeData = await codeRes.json();
-
-  if (codeData.error) {
-    console.error("Erro ao solicitar device code:", codeData.error_description);
-    process.exit(1);
-  }
-
-  // 2. Mostrar instruções
-  console.log("  ┌─────────────────────────────────────────────────┐");
-  console.log("  │                                                 │");
-  console.log(`  │  Acesse: ${codeData.verification_uri.padEnd(38)}│`);
-  console.log(`  │  Código: ${codeData.user_code.padEnd(38)}│`);
-  console.log("  │                                                 │");
-  console.log("  └─────────────────────────────────────────────────┘");
-  console.log("\n  Aguardando login...\n");
-
-  // 3. Polling até o usuário logar
-  const interval = codeData.interval || 5;
-  const expiresAt = Date.now() + (codeData.expires_in * 1000);
-
-  while (Date.now() < expiresAt) {
-    await new Promise((r) => setTimeout(r, interval * 1000));
-
-    const tokenRes = await fetch(`https://login.microsoftonline.com/${TENANT_ID}/oauth2/v2.0/token`, {
+  const res = await fetch(
+    `https://login.microsoftonline.com/${SHAREPOINT_TENANT_ID}/oauth2/v2.0/token`,
+    {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
-        grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-        client_id: CLIENT_ID,
-        device_code: codeData.device_code,
+        grant_type: "client_credentials",
+        client_id: SHAREPOINT_CLIENT_ID,
+        client_secret: SHAREPOINT_CLIENT_SECRET,
+        scope: "https://graph.microsoft.com/.default",
       }).toString(),
-    });
-
-    const tokenData = await tokenRes.json();
-
-    if (tokenData.access_token) {
-      console.log("  Login realizado com sucesso!\n");
-      return tokenData;
     }
+  );
 
-    if (tokenData.error === "authorization_pending") continue;
-    if (tokenData.error === "slow_down") { await new Promise((r) => setTimeout(r, 5000)); continue; }
-
-    console.error("Erro:", tokenData.error_description);
+  const data = await res.json();
+  if (data.error) {
+    console.error("Erro na autenticação:", data.error_description);
     process.exit(1);
   }
 
-  console.error("Tempo expirado. Execute novamente.");
-  process.exit(1);
-}
-
-async function getAccessToken() {
-  // Tentar refresh token salvo
-  const cached = await loadCachedToken();
-
-  if (cached?.refresh_token) {
-    // Token ainda válido?
-    if (cached.expires_at && cached.expires_at > Date.now() + 60000) {
-      console.log("Usando token em cache (válido)");
-      return cached.access_token;
-    }
-
-    // Tentar refresh
-    console.log("Renovando token...");
-    const refreshed = await refreshAccessToken(cached.refresh_token);
-    if (refreshed) {
-      await saveCachedToken(refreshed);
-      console.log("Token renovado!");
-      return refreshed.access_token;
-    }
-
-    console.log("Refresh token expirado. Necessário login novamente.");
-  }
-
-  // Primeiro login ou refresh expirado
-  const tokenData = await deviceCodeLogin();
-  await saveCachedToken(tokenData);
-  return tokenData.access_token;
+  console.log("Autenticado com sucesso!");
+  return data.access_token;
 }
 
 // ═══════════════════════════════════════════
@@ -161,44 +61,76 @@ async function getAccessToken() {
 // ═══════════════════════════════════════════
 
 async function downloadFile(token) {
-  const siteUrl = new URL(SHAREPOINT_SITE_URL || "https://synviagroup.sharepoint.com/sites/GerenciamentodeProjetos");
-  const hostname = siteUrl.hostname;
-  const sitePath = siteUrl.pathname;
+  const headers = { Authorization: `Bearer ${token}` };
+  const filePath = encodeURI(SHAREPOINT_FILE_PATH);
 
+  // Se temos o drive ID direto, baixar sem precisar descobrir o site
+  if (SHAREPOINT_DRIVE_ID) {
+    // Buscar metadados do arquivo (última modificação)
+    console.log(`Buscando metadados de ${SHAREPOINT_FILE_PATH}...`);
+    const metaUrl = `${GRAPH}/drives/${SHAREPOINT_DRIVE_ID}/root:/${filePath}`;
+    const metaRes = await fetch(metaUrl, { headers });
+    let lastModified = new Date().toISOString();
+    if (metaRes.ok) {
+      const metaData = await metaRes.json();
+      lastModified = metaData.lastModifiedDateTime || lastModified;
+      console.log(`Última modificação no SharePoint: ${lastModified}`);
+    }
+
+    console.log(`Baixando...`);
+    const url = `${GRAPH}/drives/${SHAREPOINT_DRIVE_ID}/root:/${filePath}:/content`;
+    const res = await fetch(url, { headers, redirect: "follow" });
+
+    if (!res.ok) {
+      console.error(`Erro ao baixar: ${res.status} ${res.statusText}`);
+      process.exit(1);
+    }
+
+    const buffer = Buffer.from(await res.arrayBuffer());
+    console.log(`Baixado: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
+    return { buffer, lastModified };
+  }
+
+  // Fallback: descobrir site → drives → arquivo
   console.log("Buscando site...");
-  const siteRes = await fetch(`https://graph.microsoft.com/v1.0/sites/${hostname}:${sitePath}`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
+  const siteRes = await fetch(
+    `${GRAPH}/sites/${SHAREPOINT_HOSTNAME}:/${SHAREPOINT_SITE_PATH}`,
+    { headers }
+  );
   const siteData = await siteRes.json();
   if (siteData.error) {
     console.error("Erro ao acessar site:", siteData.error.message);
-    if (siteData.error.code === "accessDenied") {
-      console.log("Sem permissão. Verifique se sua conta tem acesso ao site SharePoint.");
-    }
     process.exit(1);
   }
   console.log(`Site: ${siteData.displayName}`);
 
-  console.log("Buscando NEW_BD.xlsm...");
-  const searchRes = await fetch(
-    `https://graph.microsoft.com/v1.0/sites/${siteData.id}/drive/root/search(q='NEW_BD')`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-  const searchData = await searchRes.json();
+  // Listar drives e buscar o arquivo
+  const drivesRes = await fetch(`${GRAPH}/sites/${siteData.id}/drives`, { headers });
+  const drivesData = await drivesRes.json();
 
-  const file = searchData.value?.find((f) => f.name.includes("NEW_BD"));
-  if (!file) { console.error("Arquivo não encontrado."); process.exit(1); }
-  console.log(`Encontrado: ${file.name} (${(file.size / 1024 / 1024).toFixed(1)}MB)`);
+  for (const drive of drivesData.value || []) {
+    const searchRes = await fetch(
+      `${GRAPH}/drives/${drive.id}/root:/${filePath}`,
+      { headers }
+    );
+    if (searchRes.ok) {
+      const fileData = await searchRes.json();
+      console.log(`Encontrado em [${drive.name}]: ${fileData.name}`);
+      console.log(`Drive ID: ${drive.id} (salve no .env para acelerar próximas execuções)`);
 
-  console.log("Baixando...");
-  const dlUrl = file["@microsoft.graph.downloadUrl"];
-  const fileRes = await fetch(dlUrl);
-  const buffer = Buffer.from(await fileRes.arrayBuffer());
+      const lastModified = fileData.lastModifiedDateTime || new Date().toISOString();
+      const dlRes = await fetch(
+        `${GRAPH}/drives/${drive.id}/root:/${filePath}:/content`,
+        { headers, redirect: "follow" }
+      );
+      const buffer = Buffer.from(await dlRes.arrayBuffer());
+      console.log(`Baixado: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
+      return { buffer, lastModified };
+    }
+  }
 
-  const localPath = join(ROOT, "NEW_BD.xlsm");
-  await writeFile(localPath, buffer);
-  console.log(`Salvo: ${localPath}`);
-  return localPath;
+  console.error("Arquivo não encontrado em nenhum drive.");
+  process.exit(1);
 }
 
 // ═══════════════════════════════════════════
@@ -281,16 +213,26 @@ function extractFinanceiro(wb) {
 async function main() {
   try {
     const token = await getAccessToken();
-    const filePath = await downloadFile(token);
+    const { buffer, lastModified } = await downloadFile(token);
 
     console.log("\nProcessando Excel...");
-    const wb = XLSX.readFile(filePath);
+    const wb = XLSX.read(buffer, { type: "buffer" });
 
     const entregaveis = extractEntregaveis(wb);
     const financeiro = extractFinanceiro(wb);
 
     await writeFile(join(ROOT, "src/data/entregaveis.json"), JSON.stringify(entregaveis));
     await writeFile(join(ROOT, "src/data/financeiro.json"), JSON.stringify(financeiro));
+
+    // Metadados da sincronização (lastModified = última edição do arquivo no SharePoint)
+    const metadata = {
+      lastModified,
+      syncedAt: new Date().toISOString(),
+      source: SHAREPOINT_FILE_PATH,
+      entregaveis: entregaveis.length,
+      financeiro: financeiro.length,
+    };
+    await writeFile(join(ROOT, "src/data/metadata.json"), JSON.stringify(metadata, null, 2));
 
     console.log(`Entregáveis: ${entregaveis.length} registros`);
     console.log(`Financeiro: ${financeiro.length} registros`);

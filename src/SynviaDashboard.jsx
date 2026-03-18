@@ -1,7 +1,46 @@
-import { useState, useMemo } from "react";
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid, AreaChart, Area } from "recharts";
-import entregaveis from "./data/entregaveis.json";
-import financeiro from "./data/financeiro.json";
+import { useState, useMemo, useEffect, useCallback } from "react";
+import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid, AreaChart, Area, Treemap, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
+import { useIsAuthenticated, useMsal } from "@azure/msal-react";
+import LoginPage from "./auth/LoginPage";
+
+// Dados estáticos como fallback (gerados no build pelo sync)
+import entregaveisFallback from "./data/entregaveis.json";
+import financeiroFallback from "./data/financeiro.json";
+import metadataFallback from "./data/metadata.json";
+
+// Variáveis reativas — atualizadas pelo fetch dinâmico
+let entregaveis = entregaveisFallback;
+let financeiro = financeiroFallback;
+let metadata = metadataFallback;
+
+// Listeners para notificar componentes quando os dados mudam
+const dataListeners = new Set();
+function onDataChange(fn) { dataListeners.add(fn); return () => dataListeners.delete(fn); }
+function notifyDataChange() { dataListeners.forEach((fn) => fn()); }
+
+/** Busca dados frescos da API */
+async function fetchFreshData(force = false) {
+  try {
+    const url = force ? "/api/data?fresh=1" : "/api/data";
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    entregaveis = data.entregaveis;
+    financeiro = data.financeiro;
+    metadata = { lastModified: data.lastModified, syncedAt: data.syncedAt };
+    notifyDataChange();
+    return true;
+  } catch (err) {
+    console.warn("Falha ao buscar dados da API, usando fallback:", err.message);
+    return false;
+  }
+}
+
+/** Hook para forçar re-render quando dados mudam */
+function useDataRefresh() {
+  const [, setTick] = useState(0);
+  useEffect(() => onDataChange(() => setTick((t) => t + 1)), []);
+}
 
 // ═══════════════════════════════════════════
 //  SYNVIA DESIGN SYSTEM
@@ -285,16 +324,58 @@ const NavItem = ({ label, active, onClick, indent }) => (
   </button>
 );
 
-const OverviewKpi = ({ value, label }) => (
-  <div style={{
-    background: DS.card, borderRadius: 12, padding: "20px 24px",
-    border: `1px solid ${DS.cardBorder}`, boxShadow: "0 1px 3px rgba(0,0,0,0.06)",
-    flex: "1 1 140px", minWidth: 140,
-  }}>
-    <div style={{ fontSize: 13, color: DS.textMuted, fontWeight: 500, marginBottom: 12 }}>{label}</div>
-    <div style={{ fontSize: 28, fontWeight: 700, color: DS.text, lineHeight: 1 }}>{value}</div>
-  </div>
-);
+const OverviewKpi = ({ value, label, color = DS.greenDark, icon }) => {
+  const iconMap = {
+    "Total de Entregáveis": "M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2",
+    "Em Andamento": "M13 10V3L4 14h7v7l9-11h-7z",
+    "Concluídos": "M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z",
+    "Atrasados": "M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z",
+    "Não Iniciados": "M20 12H4M12 4v16",
+    "Patrocinadores": "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75",
+    "Total Contratado": "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+    "Total Faturado": "M9 14l6-6m-5.5.5h.01m4.99 5h.01M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16l3.5-2 3.5 2 3.5-2 3.5 2z",
+    "% Faturado": "M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z",
+    "Pendente de Faturamento": "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+    "MT Em Andamento": "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
+    "MT Não Iniciado": "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
+    "MR Em Andamento": "M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z",
+    "Insumos Em Andamento": "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
+  };
+  const svgPath = icon || iconMap[label] || "M4 6h16M4 10h16M4 14h16M4 18h16";
+  const bgColor = color + "14"; // ~8% opacidade em hex
+
+  return (
+    <div style={{
+      background: DS.card, borderRadius: 14, padding: 0,
+      border: `1px solid ${DS.cardBorder}`, boxShadow: "0 1px 4px rgba(0,0,0,0.06)",
+      flex: "1 1 140px", minWidth: 140, overflow: "hidden",
+      display: "flex", flexDirection: "row",
+      transition: "box-shadow 0.2s, transform 0.2s",
+    }}
+    onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.10)"; e.currentTarget.style.transform = "translateY(-2px)"; }}
+    onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "0 1px 4px rgba(0,0,0,0.06)"; e.currentTarget.style.transform = "translateY(0)"; }}
+    >
+      {/* Barra lateral colorida */}
+      <div style={{ width: 4, background: color, borderRadius: "14px 0 0 14px", flexShrink: 0 }} />
+      <div style={{ padding: "18px 20px", flex: 1, display: "flex", alignItems: "center", gap: 16 }}>
+        {/* Ícone */}
+        <div style={{
+          width: 44, height: 44, borderRadius: 12, background: bgColor,
+          display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+        }}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+            <path d={svgPath} />
+          </svg>
+        </div>
+        {/* Textos */}
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 26, fontWeight: 700, color: DS.text, lineHeight: 1.1 }}>{value}</div>
+          <div style={{ fontSize: 12, color: DS.textMuted, fontWeight: 500, marginTop: 4, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</div>
+        </div>
+      </div>
+    </div>
+  );
+};
 
 const KpiCard = ({ value, label, color, subtitle }) => (
   <div style={{
@@ -695,12 +776,17 @@ const ProtocolosPage = () => {
   const [fStatusProt, setFStatusProt] = useState("Todos");
   const [fEtapa, setFEtapa] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
   const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
 
-  // Universo filtrado por ano TEP
-  const byAno = useMemo(() => allData.filter(d => d.tepAno === parseInt(anoTep)), [anoTep]);
+  // Universo filtrado por ano TEP e Key Account
+  const byAno = useMemo(() => allData.filter(d =>
+    d.tepAno === parseInt(anoTep) &&
+    (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
+  ), [anoTep, fKeyAccount]);
 
   const statusProts = useMemo(() => [...new Set(byAno.map(d => d.statusProtocolo).filter(Boolean))].sort(), [byAno]);
   const etapas = useMemo(() => [...new Set(byAno.map(d => d.etapa).filter(Boolean))].sort(), [byAno]);
@@ -754,6 +840,7 @@ const ProtocolosPage = () => {
       <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
         <div style={{ width: 200 }}><FarolSelect label="Ano — TEP" value={anoTep} options={anos.map(String)} onChange={setAnoTep} /></div>
         <div style={{ width: 200 }}><FarolSelect label="Status do Protocolo" value={fStatusProt} options={["Todos", ...statusProts]} onChange={setFStatusProt} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
         <div style={{ flex: 1 }} />
         <KpiCard value={kpiAprovados.toLocaleString("pt-BR")} label="Aprovados" color={DS.greenDark} />
         <KpiCard value={kpiAtrasado.toLocaleString("pt-BR")} label="Atrasados" color={DS.statusRisk} />
@@ -828,19 +915,32 @@ const ProtocolosPage = () => {
 const AnalisesPage = () => {
   const [fFarol, setFFarol] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const [fAno, setFAno] = useState("Todos");
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
   const farois = useMemo(() => [...new Set(allData.map(d => d.farolAnalises).filter(Boolean))].sort(), []);
   const pats = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
   const filtered = useMemo(() => allData.filter(d =>
     (fFarol === "Todos" || d.farolAnalises === fFarol) &&
-    (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador)
-  ), [fFarol, fPatrocinador]);
+    (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
+    (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
+    (fAno === "Todos" || d.tepAno === parseInt(fAno))
+  ), [fFarol, fPatrocinador, fKeyAccount, fAno]);
+
+  const kpiAtrasado = useMemo(() => filtered.filter(d => d.farolAnalises === "Atrasado").length, [filtered]);
+  const kpiAndamento = useMemo(() => filtered.filter(d => d.farolAnalises === "Em andamento").length, [filtered]);
+  const kpiNaoIniciado = useMemo(() => filtered.filter(d => d.farolAnalises === "Não iniciado").length, [filtered]);
 
   return (
     <>
-      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <KpiCard value="211" label="Em Atraso" color={DS.statusRisk} />
-        <KpiCard value="5" label="Em Andamento" color={DS.statusActive} />
-        <KpiCard value="491" label="Não Iniciado" color={DS.amber} />
+      <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
+        <div style={{ width: 160 }}><FarolSelect label="Ano" value={fAno} options={["Todos", ...anos.map(String)]} onChange={setFAno} /></div>
+        <div style={{ width: 160 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
+        <div style={{ flex: 1 }} />
+        <KpiCard value={kpiAtrasado.toLocaleString("pt-BR")} label="Em Atraso" color={DS.statusRisk} />
+        <KpiCard value={kpiAndamento.toLocaleString("pt-BR")} label="Em Andamento" color={DS.statusActive} />
+        <KpiCard value={kpiNaoIniciado.toLocaleString("pt-BR")} label="Não Iniciado" color={DS.amber} />
       </div>
       <SectionCard title="Quantidade Prevista — Início x Término das Análises">
         <ResponsiveContainer width="100%" height={280}>
@@ -894,9 +994,11 @@ const DocTecnicaPage = () => {
   const [anoDT, setAnoDT] = useState("2025");
   const [fMonitoria, setFMonitoria] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
   const anos = useMemo(() => [...new Set(allData.map(d => d.dataPrevTerminoDTAno).filter(Boolean))].sort(), []);
   const monitorias = useMemo(() => [...new Set(allData.map(d => d.monitoriaDT).filter(v => v && v !== "NA"))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: DT pendente no ano selecionado
@@ -905,9 +1007,10 @@ const DocTecnicaPage = () => {
     return allData.filter(d =>
       d.dataPrevTerminoDTAno === parseInt(anoDT) &&
       statusAtivos.includes(d.statusDT) &&
-      (fMonitoria === "Todos" || d.monitoriaDT === fMonitoria)
+      (fMonitoria === "Todos" || d.monitoriaDT === fMonitoria) &&
+      (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [anoDT, fMonitoria]);
+  }, [anoDT, fMonitoria, fKeyAccount]);
 
   // Universo expandido para gráfico (inclui Não iniciado)
   const prevBarras = useMemo(() => {
@@ -941,6 +1044,7 @@ const DocTecnicaPage = () => {
       <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
         <div style={{ width: 200 }}><FarolSelect label="Ano" value={anoDT} options={anos.map(String)} onChange={setAnoDT} /></div>
         <div style={{ width: 200 }}><FarolSelect label="Monitoria DT" value={fMonitoria} options={["Todos", ...monitorias]} onChange={setFMonitoria} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
         <div style={{ flex: 1 }} />
         <KpiCard value={totalProjetos.toLocaleString("pt-BR")} label="Projetos Pendentes" color={DS.greenDark} />
         <KpiCard value={totalPendentes.toLocaleString("pt-BR")} label="Entreg. Pendentes" color={DS.blue} />
@@ -1001,9 +1105,11 @@ const GarantiaQualidadePage = () => {
   const [anoGQ, setAnoGQ] = useState("2025");
   const [fMonitoria, setFMonitoria] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
   const anos = useMemo(() => [...new Set(allData.map(d => d.dataPrevTerminoGQAno).filter(Boolean))].sort(), []);
   const monitorias = useMemo(() => [...new Set(allData.map(d => d.monitoriaGQ).filter(v => v && v !== "NA"))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: GQ pendente (não finalizada, não NA)
@@ -1011,9 +1117,10 @@ const GarantiaQualidadePage = () => {
     return allData.filter(d =>
       d.dataPrevTerminoGQAno === parseInt(anoGQ) &&
       d.monitoriaGQ && d.monitoriaGQ !== "NA" && d.monitoriaGQ !== "9.Finalizado" &&
-      (fMonitoria === "Todos" || d.monitoriaGQ === fMonitoria)
+      (fMonitoria === "Todos" || d.monitoriaGQ === fMonitoria) &&
+      (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [anoGQ, fMonitoria]);
+  }, [anoGQ, fMonitoria, fKeyAccount]);
 
   // Universo expandido para gráfico (inclui não iniciado)
   const prevBarras = useMemo(() => {
@@ -1053,6 +1160,7 @@ const GarantiaQualidadePage = () => {
       <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
         <div style={{ width: 200 }}><FarolSelect label="Ano" value={anoGQ} options={anos.map(String)} onChange={setAnoGQ} /></div>
         <div style={{ width: 200 }}><FarolSelect label="Monitoria GQ" value={fMonitoria} options={["Todos", ...monitorias]} onChange={setFMonitoria} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
         <div style={{ flex: 1 }} />
       </div>
       <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
@@ -1140,8 +1248,10 @@ const MonitoriaCheckbox = ({ label, checked, onChange }) => (
 const SinebPage = () => {
   const [anoSineb, setAnoSineb] = useState("2025");
   const [fPat, setFPat] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
   const anos = useMemo(() => [...new Set(allData.map(d => d.dataEnvioPatAno).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: envio ao patrocinador no ano, SINEB não fechado, projeto ativo
@@ -1149,9 +1259,10 @@ const SinebPage = () => {
     return allData.filter(d =>
       d.dataEnvioPatAno === parseInt(anoSineb) &&
       !d.dataSineb &&
-      !["Concluído", "Cancelado", "Stand by"].includes(d.statusProjeto)
+      !["Concluído", "Cancelado", "Stand by"].includes(d.statusProjeto) &&
+      (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [anoSineb]);
+  }, [anoSineb, fKeyAccount]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(pendentes.map(d => d.codigoRve).filter(Boolean)).size, [pendentes]);
@@ -1192,6 +1303,7 @@ const SinebPage = () => {
       {/* Filtro + KPIs */}
       <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
         <div style={{ width: 200 }}><FarolSelect label="Ano — Envio ao Patrocinador" value={anoSineb} options={anos.map(String)} onChange={setAnoSineb} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
         <div style={{ flex: 1 }} />
         <KpiCard value={totalProjetos.toLocaleString("pt-BR")} label="Projetos Pendentes" color={DS.greenDark} />
         <KpiCard value={totalPendentes.toLocaleString("pt-BR")} label="Entreg. Pendentes" color={DS.blue} />
@@ -1249,8 +1361,47 @@ const SinebPage = () => {
   );
 };
 
+const CollapsibleFilter = ({ title, count, options, selected, onToggle, defaultOpen = false }) => {
+  const [open, setOpen] = useState(defaultOpen);
+  const selectedCount = selected.length;
+  return (
+    <div style={{ background: DS.card, borderRadius: 12, border: `1px solid ${DS.cardBorder}`, overflow: "hidden" }}>
+      <button
+        onClick={() => setOpen(!open)}
+        style={{
+          width: "100%", padding: "12px 16px", background: "none", border: "none", cursor: "pointer",
+          display: "flex", alignItems: "center", justifyContent: "space-between",
+          fontFamily: "inherit",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 14, fontWeight: 600, color: DS.text }}>{title}</span>
+          <span style={{
+            fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 9999,
+            background: selectedCount > 0 ? DS.greenBg100 : DS.bg, color: selectedCount > 0 ? DS.green : DS.textMuted,
+          }}>{selectedCount}/{options.length}</span>
+          <span style={{ fontSize: 12, color: DS.textMuted }}>({count})</span>
+        </div>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DS.textMuted} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+          style={{ transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "rotate(0deg)" }}>
+          <path d="m6 9 6 6 6-6"/>
+        </svg>
+      </button>
+      {open && (
+        <div style={{ padding: "0 16px 12px", display: "flex", flexDirection: "column", gap: 6 }}>
+          {options.map(o => (
+            <MonitoriaCheckbox key={o} label={o} checked={selected.includes(o)} onChange={() => onToggle(o)} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const MonitoriasPage = () => {
   const [fPat, setFPat] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
   const [dtFilters, setDtFilters] = useState(["1.Em fila", "2.Em conferência", "3.Monitoria Lab", "4.Em conferência retorno de monitoria"]);
   const [gqFilters, setGqFilters] = useState(["3.Monitoria DT/LAB", "4.Monitoria DT", "5.Monitoria Lab"]);
   const [patFilters, setPatFilters] = useState(["2. Monitoria DT", "3.Monitoria Lab"]);
@@ -1265,11 +1416,12 @@ const MonitoriasPage = () => {
 
   const filtered = useMemo(() => {
     return allData.filter(d =>
-      (dtFilters.length > 0 && dtFilters.includes(d.monitoriaDT)) ||
+      ((dtFilters.length > 0 && dtFilters.includes(d.monitoriaDT)) ||
       (gqFilters.length > 0 && gqFilters.includes(d.monitoriaGQ)) ||
-      (patFilters.length > 0 && patFilters.includes(d.monitoriaPatrocinador))
+      (patFilters.length > 0 && patFilters.includes(d.monitoriaPatrocinador))) &&
+      (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [dtFilters, gqFilters, patFilters]);
+  }, [dtFilters, gqFilters, patFilters, fKeyAccount]);
 
   const countDT = useMemo(() => allData.filter(d => dtFilters.includes(d.monitoriaDT)).length, [dtFilters]);
   const countGQ = useMemo(() => allData.filter(d => gqFilters.includes(d.monitoriaGQ)).length, [gqFilters]);
@@ -1277,28 +1429,17 @@ const MonitoriasPage = () => {
 
   return (
     <>
-      {/* Checkboxes */}
+      {/* Filtro de Key Account */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
+      </div>
+      {/* Filtros colapsáveis */}
       <div style={{
         display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 20,
       }}>
-        <div style={{ padding: "16px 20px", background: DS.card, borderRadius: 12, border: `1px solid ${DS.cardBorder}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: DS.text, marginBottom: 10 }}>Monitoria DT <span style={{ fontWeight: 400, color: DS.textMuted }}>({countDT})</span></div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {dtOpts.map(o => <MonitoriaCheckbox key={o} label={o} checked={dtFilters.includes(o)} onChange={() => toggle(dtFilters, setDtFilters, o)} />)}
-          </div>
-        </div>
-        <div style={{ padding: "16px 20px", background: DS.card, borderRadius: 12, border: `1px solid ${DS.cardBorder}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: DS.text, marginBottom: 10 }}>Monitoria GQ <span style={{ fontWeight: 400, color: DS.textMuted }}>({countGQ})</span></div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {gqOpts.map(o => <MonitoriaCheckbox key={o} label={o} checked={gqFilters.includes(o)} onChange={() => toggle(gqFilters, setGqFilters, o)} />)}
-          </div>
-        </div>
-        <div style={{ padding: "16px 20px", background: DS.card, borderRadius: 12, border: `1px solid ${DS.cardBorder}` }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: DS.text, marginBottom: 10 }}>Monitoria Patrocinador <span style={{ fontWeight: 400, color: DS.textMuted }}>({countPat})</span></div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {patOpts.map(o => <MonitoriaCheckbox key={o} label={o} checked={patFilters.includes(o)} onChange={() => toggle(patFilters, setPatFilters, o)} />)}
-          </div>
-        </div>
+        <CollapsibleFilter title="Monitoria DT" count={countDT} options={dtOpts} selected={dtFilters} onToggle={(v) => toggle(dtFilters, setDtFilters, v)} />
+        <CollapsibleFilter title="Monitoria GQ" count={countGQ} options={gqOpts} selected={gqFilters} onToggle={(v) => toggle(gqFilters, setGqFilters, v)} />
+        <CollapsibleFilter title="Monitoria Patrocinador" count={countPat} options={patOpts} selected={patFilters} onToggle={(v) => toggle(patFilters, setPatFilters, v)} />
       </div>
 
       {/* KPI */}
@@ -1357,14 +1498,19 @@ const LaboratorioPage = () => {
   const [fEtapa, setFEtapa] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
   const [fTipo, setFTipo] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
 
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: entregáveis no pipeline do lab
   const universo = useMemo(() => {
-    const base = allData.filter(d => labEtapas.includes(d.etapa));
+    const base = allData.filter(d =>
+      labEtapas.includes(d.etapa) &&
+      (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
+    );
     return fEtapa === "Todos" ? base : base.filter(d => d.etapa === fEtapa);
-  }, [fEtapa]);
+  }, [fEtapa, fKeyAccount]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(universo.map(d => d.codigoRve).filter(Boolean)).size, [universo]);
@@ -1407,6 +1553,7 @@ const LaboratorioPage = () => {
           <FarolSelect label="Etapa do Projeto" value={fEtapa}
             options={["Todos", ...labEtapas]} onChange={setFEtapa} />
         </div>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
         <div style={{ flex: 1 }} />
         <KpiCard value={totalProjetos.toLocaleString("pt-BR")} label="Projetos Pendentes" />
         <KpiCard value={totalEntregaveis.toLocaleString("pt-BR")} label="Entreg. Pendentes" />
@@ -1591,17 +1738,23 @@ const ProximasEntradasPage = () => {
 const FarolPage = () => {
   const [anoTep, setAnoTep] = useState("2025");
   const [mesTep, setMesTep] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const [fPatrocinador, setFPatrocinador] = useState("Todos");
 
   const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
   const meses = ["Todos","1","2","3","4","5","6","7","8","9","10","11","12"];
   const nomeMes = { "1":"Jan","2":"Fev","3":"Mar","4":"Abr","5":"Mai","6":"Jun","7":"Jul","8":"Ago","9":"Set","10":"Out","11":"Nov","12":"Dez" };
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const patrocinadores = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
 
   const filtered = useMemo(() => {
     return allData.filter(d =>
       d.tepAno === parseInt(anoTep) &&
-      (mesTep === "Todos" || d.tepMes === parseInt(mesTep))
+      (mesTep === "Todos" || d.tepMes === parseInt(mesTep)) &&
+      (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
+      (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador)
     );
-  }, [anoTep, mesTep]);
+  }, [anoTep, mesTep, fKeyAccount, fPatrocinador]);
 
   // KPIs
   const kpiProtAprovados = useMemo(() => filtered.filter(d =>
@@ -1651,8 +1804,10 @@ const FarolPage = () => {
       <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
         <div style={{ width: 200 }}><FarolSelect label="Ano — TEP" value={anoTep} options={anos.map(String)} onChange={setAnoTep} /></div>
         <div style={{ width: 200 }}><FarolSelect label="Mês — TEP" value={mesTep} options={["Todos","1","2","3","4","5","6","7","8","9","10","11","12"]} displayFn={(v) => v === "Todos" ? "Todos os meses" : nomeMes[v]} onChange={setMesTep} /></div>
-        {mesTep !== "Todos" && (
-          <button onClick={() => setMesTep("Todos")}
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Patrocinador" value={fPatrocinador} options={["Todos", ...patrocinadores]} onChange={setFPatrocinador} /></div>
+        {(mesTep !== "Todos" || fKeyAccount !== "Todos" || fPatrocinador !== "Todos") && (
+          <button onClick={() => { setMesTep("Todos"); setFKeyAccount("Todos"); setFPatrocinador("Todos"); }}
             style={{ padding: "0 14px", height: 36, borderRadius: 9999, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, fontFamily: font, background: DS.redBg, color: DS.statusRisk, alignSelf: "flex-end" }}>
             Limpar</button>
         )}
@@ -1728,28 +1883,70 @@ const FarolPage = () => {
 };
 
 const OverviewPage = () => {
-  const total = projetoStatus.reduce((s, d) => s + d.value, 0);
+  // KPIs dinâmicos calculados dos dados reais
+  const totalEntregaveis = allData.length;
+  const emAndamento = useMemo(() => allData.filter(d => d.statusProjeto === "Em andamento").length, []);
+  const concluidos = useMemo(() => allData.filter(d => d.statusProjeto && d.statusProjeto.includes("Concluído")).length, []);
+  const atrasados = useMemo(() => allData.filter(d => d.farolProtocolo === "Atrasado" || d.farolAnalises === "Atrasado").length, []);
+  const naoIniciados = useMemo(() => allData.filter(d => d.statusProjeto === "Não iniciado").length, []);
+  const totalPatrocinadores = useMemo(() => new Set(allData.map(d => d.patrocinador).filter(Boolean)).size, []);
+
+  // Financeiro dinâmico
+  const totalContrato = useMemo(() => allFinanceiro.reduce((s, d) => s + (d.totalContrato || 0), 0), []);
+  const totalFaturado = useMemo(() => allFinanceiro.filter(d => d.tipo === "Faturado").reduce((s, d) => s + (d.valorParcela || 0), 0), []);
+  const pctFaturado = totalContrato > 0 ? ((totalFaturado / totalContrato) * 100).toFixed(1) : "0,0";
+
+  const fmtMoeda = (v) => "R$ " + (v / 1e6).toFixed(1).replace(".", ",") + "M";
+
   return (
     <>
-      {/* KPIs gerais — grid 3x2 */}
+      {/* Painel — Visão Geral dos Entregáveis */}
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 24,
+        background: DS.card, borderRadius: 16, border: `1px solid ${DS.cardBorder}`,
+        boxShadow: "0 1px 4px rgba(0,0,0,0.06)", padding: "20px 24px", marginBottom: 24,
       }}>
-        <OverviewKpi value={total.toLocaleString("pt-BR")} label="Total de Entregáveis" color={DS.greenDark} />
-        <OverviewKpi value="862" label="Em Andamento" color={DS.statusActive} />
-        <OverviewKpi value="722" label="Concluídos" color={DS.green} />
-        <OverviewKpi value="158" label="Atrasados" color={DS.statusRisk} />
-        <OverviewKpi value="101" label="Não Iniciados" color={DS.amber} />
-        <OverviewKpi value="66" label="Patrocinadores" color={DS.blue} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 8, background: DS.greenDark + "14",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={DS.greenDark} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect width="7" height="9" x="3" y="3" rx="1"/><rect width="7" height="5" x="14" y="3" rx="1"/><rect width="7" height="9" x="14" y="12" rx="1"/><rect width="7" height="5" x="3" y="16" rx="1"/>
+            </svg>
+          </div>
+          <span style={{ fontSize: 15, fontWeight: 600, color: DS.text }}>Visão Geral dos Entregáveis</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+          <OverviewKpi value={totalEntregaveis.toLocaleString("pt-BR")} label="Total de Entregáveis" color={DS.greenDark} />
+          <OverviewKpi value={emAndamento.toLocaleString("pt-BR")} label="Em Andamento" color={DS.greenDark} />
+          <OverviewKpi value={concluidos.toLocaleString("pt-BR")} label="Concluídos" color={DS.greenDark} />
+          <OverviewKpi value={atrasados.toLocaleString("pt-BR")} label="Atrasados" color={DS.greenDark} />
+          <OverviewKpi value={naoIniciados.toLocaleString("pt-BR")} label="Não Iniciados" color={DS.greenDark} />
+          <OverviewKpi value={totalPatrocinadores.toLocaleString("pt-BR")} label="Patrocinadores" color={DS.greenDark} />
+        </div>
       </div>
 
-      {/* KPIs financeiros e performance */}
+      {/* Painel — Resumo Financeiro */}
       <div style={{
-        display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 24,
+        background: DS.card, borderRadius: 16, border: `1px solid ${DS.cardBorder}`,
+        boxShadow: "0 1px 4px rgba(0,0,0,0.06)", padding: "20px 24px", marginBottom: 24,
       }}>
-        <OverviewKpi value="R$ 66,2M" label="Total Contratado" color={DS.greenDark} />
-        <OverviewKpi value="R$ 16,7M" label="Total Faturado" color={DS.statusActive} />
-        <OverviewKpi value="25,3%" label="% Faturado" color={DS.blue} />
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+          <div style={{
+            width: 32, height: 32, borderRadius: 8, background: "#d9770614",
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#d97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <span style={{ fontSize: 15, fontWeight: 600, color: DS.text }}>Resumo Financeiro</span>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 14 }}>
+          <OverviewKpi value={fmtMoeda(totalContrato)} label="Total Contratado" color="#d97706" />
+          <OverviewKpi value={fmtMoeda(totalFaturado)} label="Total Faturado" color="#d97706" />
+          <OverviewKpi value={pctFaturado.replace(".", ",") + "%"} label="% Faturado" color="#d97706" />
+        </div>
       </div>
 
       {/* Status do Projeto + Por Tipo */}
@@ -1758,7 +1955,18 @@ const OverviewPage = () => {
           <DonutChart data={projetoStatus} />
         </SectionCard>
         <SectionCard title="Distribuição por Tipo de Ensaio">
-          <DonutChart data={porTipo} />
+          <ResponsiveContainer width="100%" height={340}>
+            <BarChart data={porTipo} layout="vertical" margin={{ left: 10, right: 50, top: 5, bottom: 5 }}>
+              <XAxis type="number" hide />
+              <YAxis type="category" dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 12, textAnchor: "start", dx: -80 }} axisLine={false} tickLine={false} width={85} />
+              <Tooltip content={<ChartTooltip />} />
+              <Bar dataKey="value" name="Projetos" radius={[0, 4, 4, 0]} barSize={20}
+                label={{ position: "right", fill: DS.textSecondary, fontSize: 12, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
+              >
+                {porTipo.map((d, i) => <Cell key={i} fill={d.color} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
         </SectionCard>
       </div>
 
@@ -1778,13 +1986,16 @@ const OverviewPage = () => {
         </SectionCard>
         <SectionCard title="Top 10 Patrocinadores">
           <ResponsiveContainer width="100%" height={340}>
-            <BarChart data={topPatrocinadores} layout="vertical" margin={{ left: 20, right: 50, top: 5, bottom: 5 }}>
-              <XAxis type="number" hide />
-              <YAxis type="category" dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 13, textAnchor: "start", dx: -115 }} axisLine={false} tickLine={false} width={120} />
+            <BarChart data={topPatrocinadores} margin={{ left: 5, right: 5, top: 20, bottom: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={DS.cardBorder} vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 10, fontWeight: 500 }} axisLine={false} tickLine={false} angle={-35} textAnchor="end" height={60} />
+              <YAxis hide />
               <Tooltip content={<ChartTooltip />} />
-              <Bar dataKey="value" name="Entregáveis" fill={CHART_COLORS[0]} radius={[0, 4, 4, 0]} barSize={20}
-                label={{ position: "right", fill: DS.textSecondary, fontSize: 13, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
-              />
+              <Bar dataKey="value" name="Entregáveis" radius={[4, 4, 0, 0]} barSize={28}
+                label={{ position: "top", fill: DS.textSecondary, fontSize: 11, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
+              >
+                {topPatrocinadores.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </SectionCard>
@@ -1792,13 +2003,13 @@ const OverviewPage = () => {
 
       {/* Etapa do Projeto */}
       <SectionCard title="Distribuição por Etapa do Projeto">
-        <ResponsiveContainer width="100%" height={340}>
-          <BarChart data={porEtapa} layout="vertical" margin={{ left: 20, right: 50, top: 5, bottom: 5 }}>
+        <ResponsiveContainer width="100%" height={380}>
+          <BarChart data={porEtapa} layout="vertical" margin={{ left: 10, right: 50, top: 5, bottom: 5 }}>
             <XAxis type="number" hide />
-            <YAxis type="category" dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 13, textAnchor: "start", dx: -195 }} axisLine={false} tickLine={false} width={200} />
+            <YAxis type="category" dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 12, textAnchor: "start", dx: -145 }} axisLine={false} tickLine={false} width={150} />
             <Tooltip content={<ChartTooltip />} />
-            <Bar dataKey="value" name="Projetos" fill={CHART_COLORS[0]} radius={[0, 4, 4, 0]} barSize={20}
-              label={{ position: "right", fill: DS.textSecondary, fontSize: 13, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
+            <Bar dataKey="value" name="Projetos" fill={DS.greenDark} radius={[0, 4, 4, 0]} barSize={20}
+              label={{ position: "right", fill: DS.textSecondary, fontSize: 12, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
             />
           </BarChart>
         </ResponsiveContainer>
@@ -1837,37 +2048,86 @@ const OverviewPage = () => {
           </ResponsiveContainer>
         </SectionCard>
         <SectionCard title="Resumo de Faróis — Todas as Áreas">
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, padding: "8px 0" }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, padding: "4px 0" }}>
             {[
-              { area: "Protocolo", atrasado: 13, andamento: 28, naoIniciado: 275 },
-              { area: "Análises", atrasado: 211, andamento: 5, naoIniciado: 491 },
-              { area: "Doc. Técnica", atrasado: 75, andamento: 3, naoIniciado: 735 },
-              { area: "Gar. Qualidade", atrasado: 15, andamento: 39, naoIniciado: 826 },
-              { area: "Patrocinador", atrasado: 0, andamento: 124, naoIniciado: 829 },
-              { area: "Medicamento Teste", atrasado: 2, andamento: 253, naoIniciado: 128 },
-              { area: "Medicamento Ref.", atrasado: 0, andamento: 70, naoIniciado: 205 },
-              { area: "Insumos Lab.", atrasado: 0, andamento: 129, naoIniciado: 187 },
-            ].map((a) => (
-              <div key={a.area} style={{
-                padding: "14px 16px", borderRadius: 10, border: `1px solid ${DS.cardBorder}`,
-              }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: DS.text, marginBottom: 10 }}>{a.area}</div>
-                <div style={{ display: "flex", gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: DS.statusRisk }}>{a.atrasado}</div>
-                    <div style={{ fontSize: 11, color: DS.textMuted }}>Atrasado</div>
+              { area: "Protocolo", icon: "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z", atrasado: 13, andamento: 28, naoIniciado: 275 },
+              { area: "Análises", icon: "M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z", atrasado: 211, andamento: 5, naoIniciado: 491 },
+              { area: "Doc. Técnica", icon: "M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253", atrasado: 75, andamento: 3, naoIniciado: 735 },
+              { area: "Gar. Qualidade", icon: "M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z", atrasado: 15, andamento: 39, naoIniciado: 826 },
+              { area: "Patrocinador", icon: "M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M9 11a4 4 0 100-8 4 4 0 000 8zM23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75", atrasado: 0, andamento: 124, naoIniciado: 829 },
+              { area: "Med. Teste", icon: "M10.5 2.5L4.2 8.8a4.95 4.95 0 007 7l6.3-6.3a4.95 4.95 0 00-7-7zM8.5 8.5l7 7", atrasado: 2, andamento: 253, naoIniciado: 128 },
+              { area: "Med. Referência", icon: "M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4", atrasado: 0, andamento: 70, naoIniciado: 205 },
+              { area: "Insumos Lab.", icon: "M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z", atrasado: 0, andamento: 129, naoIniciado: 187 },
+            ].map((a) => {
+              const total = a.atrasado + a.andamento + a.naoIniciado;
+              const pctAtr = total ? (a.atrasado / total * 100) : 0;
+              const pctAnd = total ? (a.andamento / total * 100) : 0;
+              const pctNao = total ? (a.naoIniciado / total * 100) : 0;
+              // Cor de destaque do card — vermelho se muitos atrasados, verde se poucos
+              const accentColor = pctAtr > 20 ? DS.statusRisk : pctAtr > 5 ? DS.amber : DS.statusActive;
+              return (
+                <div key={a.area} style={{
+                  padding: 0, borderRadius: 12, border: `1px solid ${DS.cardBorder}`,
+                  overflow: "hidden", background: DS.card,
+                  transition: "box-shadow 0.2s, transform 0.2s",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)"; e.currentTarget.style.transform = "translateY(-1px)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.boxShadow = "none"; e.currentTarget.style.transform = "translateY(0)"; }}
+                >
+                  {/* Header do mini-card */}
+                  <div style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "14px 16px 10px",
+                  }}>
+                    <div style={{
+                      width: 34, height: 34, borderRadius: 9, background: DS.greenDark + "14",
+                      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                    }}>
+                      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke={DS.greenDark} strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                        <path d={a.icon} />
+                      </svg>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: DS.text, lineHeight: 1.2 }}>{a.area}</div>
+                      <div style={{ fontSize: 11, color: DS.textMuted, marginTop: 1 }}>{total.toLocaleString("pt-BR")} pendentes</div>
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: DS.statusActive }}>{a.andamento}</div>
-                    <div style={{ fontSize: 11, color: DS.textMuted }}>Andamento</div>
+
+                  {/* Barra de proporção empilhada */}
+                  <div style={{ padding: "0 16px", marginBottom: 12 }}>
+                    <div style={{
+                      display: "flex", height: 6, borderRadius: 3, overflow: "hidden",
+                      background: "#f3f4f6",
+                    }}>
+                      {pctAtr > 0 && <div style={{ width: pctAtr + "%", background: DS.statusRisk, transition: "width 0.4s" }} />}
+                      {pctAnd > 0 && <div style={{ width: pctAnd + "%", background: DS.statusActive, transition: "width 0.4s" }} />}
+                      {pctNao > 0 && <div style={{ width: pctNao + "%", background: DS.amber, transition: "width 0.4s" }} />}
+                    </div>
                   </div>
-                  <div>
-                    <div style={{ fontSize: 20, fontWeight: 700, color: DS.amber }}>{a.naoIniciado}</div>
-                    <div style={{ fontSize: 11, color: DS.textMuted }}>Não Inic.</div>
+
+                  {/* Números */}
+                  <div style={{
+                    display: "flex", borderTop: `1px solid ${DS.cardBorder}`,
+                  }}>
+                    {[
+                      { val: a.atrasado, lbl: "Atrasado", color: DS.statusRisk, bg: DS.redBg },
+                      { val: a.andamento, lbl: "Andamento", color: DS.statusActive, bg: "rgba(34,197,94,0.06)" },
+                      { val: a.naoIniciado, lbl: "Não Inic.", color: DS.amber, bg: DS.amberBg },
+                    ].map((item, i) => (
+                      <div key={item.lbl} style={{
+                        flex: 1, padding: "10px 0", textAlign: "center",
+                        borderRight: i < 2 ? `1px solid ${DS.cardBorder}` : "none",
+                        background: "transparent",
+                      }}>
+                        <div style={{ fontSize: 18, fontWeight: 700, color: item.val > 0 ? item.color : DS.textMuted, lineHeight: 1 }}>
+                          {item.val.toLocaleString("pt-BR")}
+                        </div>
+                        <div style={{ fontSize: 10, color: DS.textMuted, marginTop: 3, fontWeight: 500 }}>{item.lbl}</div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </SectionCard>
       </div>
@@ -1878,19 +2138,32 @@ const OverviewPage = () => {
 const FinalizacaoPage = () => {
   const [fStatus, setFStatus] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const [fAno, setFAno] = useState("Todos");
   const statuses = useMemo(() => [...new Set(allData.map(d => d.statusPatrocinador).filter(Boolean))].sort(), []);
   const pats = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
   const filtered = useMemo(() => allData.filter(d =>
     (fStatus === "Todos" || d.statusPatrocinador === fStatus) &&
-    (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador)
-  ), [fStatus, fPatrocinador]);
+    (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
+    (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
+    (fAno === "Todos" || d.tepAno === parseInt(fAno))
+  ), [fStatus, fPatrocinador, fKeyAccount, fAno]);
+
+  const kpiAndamento = useMemo(() => filtered.filter(d => d.statusPatrocinador === "Em andamento").length, [filtered]);
+  const kpiForaPrazo = useMemo(() => filtered.filter(d => d.statusPatrocinador && d.statusPatrocinador.includes("Fora do Prazo")).length, [filtered]);
+  const kpiDentroPrazo = useMemo(() => filtered.filter(d => d.statusPatrocinador && d.statusPatrocinador.includes("Dentro do Prazo")).length, [filtered]);
 
   return (
     <>
-      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        <KpiCard value="124" label="Em Andamento" color={DS.statusActive} />
-        <KpiCard value="667" label="Fora do Prazo" color={DS.statusRisk} />
-        <KpiCard value="190" label="Dentro do Prazo" color={DS.green} />
+      <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
+        <div style={{ width: 160 }}><FarolSelect label="Ano" value={fAno} options={["Todos", ...anos.map(String)]} onChange={setFAno} /></div>
+        <div style={{ width: 160 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
+        <div style={{ flex: 1 }} />
+        <KpiCard value={kpiAndamento.toLocaleString("pt-BR")} label="Em Andamento" color={DS.statusActive} />
+        <KpiCard value={kpiForaPrazo.toLocaleString("pt-BR")} label="Fora do Prazo" color={DS.statusRisk} />
+        <KpiCard value={kpiDentroPrazo.toLocaleString("pt-BR")} label="Dentro do Prazo" color={DS.green} />
       </div>
       <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
         <SectionCard title="Status de Aprovação do Patrocinador">
@@ -1942,115 +2215,229 @@ const FinalizacaoPage = () => {
   );
 };
 
-const VisaoTimePage = () => (
-  <>
-    <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-      {porKeyAccount.map((ka) => (
-        <KpiCard key={ka.name} value={ka.value.toLocaleString("pt-BR")} label={ka.name} color={ka.color} />
-      ))}
-    </div>
-    <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-      <SectionCard title="Projetos por Key Account">
-        <ResponsiveContainer width="100%" height={340}>
-          <BarChart data={porKeyAccount} layout="vertical" margin={{ left: 20, right: 50, top: 5, bottom: 5 }}>
-            <XAxis type="number" hide />
-            <YAxis type="category" dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 13, textAnchor: "start", dx: -95 }} axisLine={false} tickLine={false} width={100} />
-            <Tooltip content={<ChartTooltip />} />
-            <Bar dataKey="value" name="Projetos" fill={CHART_COLORS[0]} radius={[0, 4, 4, 0]} barSize={20}
-              label={{ position: "right", fill: DS.textSecondary, fontSize: 13, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
-            />
-          </BarChart>
-        </ResponsiveContainer>
-      </SectionCard>
-      <SectionCard title="Categoria do Ensaio">
-        <DonutChart data={[
-          { name: "Ensaio Padrão", value: 1582, color: CHART_COLORS[0] },
-          { name: "Biolote", value: 251, color: CHART_COLORS[1] },
-          { name: "Bioisenção", value: 63, color: CHART_COLORS[2] },
-        ]} />
-      </SectionCard>
-    </div>
-    <SectionCard title="Todos os Projetos — Visão por Responsável">
-      <DataTable searchKeys={["codigo","codigoRve","projeto","ensaio","rve","variaveisRisco"]}
-        columns={[
-          { key: "keyAccount", label: "Key Account" },
-          { key: "codigo", label: "Código" },
-          { key: "patrocinador", label: "Patrocinador" },
-          { key: "tipo", label: "Tipo" },
-          { key: "ensaio", label: "Ensaio", maxW: 240 },
-          { key: "etapa", label: "Etapa", render: (v) => <EtapaBadge etapa={v} /> },
-          { key: "statusProjeto", label: "Status", render: (v) => <StatusBadge status={v} /> },
-        ]}
-        rows={allData}
-      />
-    </SectionCard>
-  </>
-);
+const VisaoTimePage = () => {
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const [fAno, setFAno] = useState("Todos");
+  const [fStatus, setFStatus] = useState("Todos");
 
-const InsumosPage = () => (
-  <>
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
-      <OverviewKpi value="253" label="MT Em Andamento" color={DS.blue} />
-      <OverviewKpi value="128" label="MT Não Iniciado" color={DS.amber} />
-      <OverviewKpi value="70" label="MR Em Andamento" color={DS.blue} />
-      <OverviewKpi value="129" label="Insumos Em Andamento" color={DS.statusActive} />
-    </div>
-    <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
-      <SectionCard title="Status Medicamento Teste (MT)">
-        <DonutChart data={statusMT} />
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
+  const statuses = useMemo(() => [...new Set(allData.map(d => d.statusProjeto).filter(Boolean))].sort(), []);
+
+  const filtered = useMemo(() => allData.filter(d =>
+    (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
+    (fAno === "Todos" || d.tepAno === parseInt(fAno)) &&
+    (fStatus === "Todos" || d.statusProjeto === fStatus)
+  ), [fKeyAccount, fAno, fStatus]);
+
+  // KPIs dinâmicos por Key Account
+  const kpiData = useMemo(() => {
+    const counts = {};
+    filtered.forEach(d => { if (d.keyAccount) counts[d.keyAccount] = (counts[d.keyAccount] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([name, value], i) => ({ name, value, color: CHART_COLORS[i % CHART_COLORS.length] }));
+  }, [filtered]);
+
+  // Donut por categoria de ensaio
+  const categoriaData = useMemo(() => {
+    const counts = {};
+    filtered.forEach(d => { if (d.categoriaEnsaio) counts[d.categoriaEnsaio] = (counts[d.categoriaEnsaio] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([name, value], i) => ({ name, value, color: CHART_COLORS[i % CHART_COLORS.length] }));
+  }, [filtered]);
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
+        <div style={{ width: 160 }}><FarolSelect label="Ano" value={fAno} options={["Todos", ...anos.map(String)]} onChange={setFAno} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Status Projeto" value={fStatus} options={["Todos", ...statuses]} onChange={setFStatus} /></div>
+        {(fKeyAccount !== "Todos" || fAno !== "Todos" || fStatus !== "Todos") && (
+          <button onClick={() => { setFKeyAccount("Todos"); setFAno("Todos"); setFStatus("Todos"); }}
+            style={{ padding: "0 14px", height: 36, borderRadius: 9999, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, fontFamily: font, background: DS.redBg, color: DS.statusRisk, alignSelf: "flex-end" }}>
+            Limpar
+          </button>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+        {kpiData.map((ka) => (
+          <KpiCard key={ka.name} value={ka.value.toLocaleString("pt-BR")} label={ka.name} color={ka.color} />
+        ))}
+      </div>
+      <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+        <SectionCard title="Projetos por Key Account">
+          <ResponsiveContainer width="100%" height={340}>
+            <BarChart data={kpiData} layout="vertical" margin={{ left: 20, right: 50, top: 5, bottom: 5 }}>
+              <XAxis type="number" hide />
+              <YAxis type="category" dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 13, textAnchor: "start", dx: -95 }} axisLine={false} tickLine={false} width={100} />
+              <Tooltip content={<ChartTooltip />} />
+              <Bar dataKey="value" name="Projetos" fill={CHART_COLORS[0]} radius={[0, 4, 4, 0]} barSize={20}
+                label={{ position: "right", fill: DS.textSecondary, fontSize: 13, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
+              />
+            </BarChart>
+          </ResponsiveContainer>
+        </SectionCard>
+        <SectionCard title="Categoria do Ensaio">
+          <DonutChart data={categoriaData} />
+        </SectionCard>
+      </div>
+      <SectionCard title="Todos os Projetos — Visão por Responsável">
+        <DataTable searchKeys={["codigo","codigoRve","projeto","ensaio","rve","variaveisRisco"]}
+          columns={[
+            { key: "keyAccount", label: "Key Account" },
+            { key: "codigo", label: "Código" },
+            { key: "patrocinador", label: "Patrocinador" },
+            { key: "tipo", label: "Tipo" },
+            { key: "ensaio", label: "Ensaio", maxW: 240 },
+            { key: "etapa", label: "Etapa", render: (v) => <EtapaBadge etapa={v} /> },
+            { key: "statusProjeto", label: "Status", render: (v) => <StatusBadge status={v} /> },
+          ]}
+          rows={filtered}
+        />
       </SectionCard>
-      <SectionCard title="Status Medicamento Referência (MR)">
-        <DonutChart data={statusMR} />
+    </>
+  );
+};
+
+const InsumosPage = () => {
+  const [fPatrocinador, setFPatrocinador] = useState("Todos");
+  const [fKeyAccount, setFKeyAccount] = useState("Todos");
+  const [fStatusMT, setFStatusMT] = useState("Todos");
+
+  const patrocinadores = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const statusMTOpts = useMemo(() => [...new Set(allData.map(d => d.statusMT).filter(Boolean))].sort(), []);
+
+  const filtered = useMemo(() => allData.filter(d =>
+    (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
+    (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
+    (fStatusMT === "Todos" || d.statusMT === fStatusMT)
+  ), [fPatrocinador, fKeyAccount, fStatusMT]);
+
+  // KPIs dinâmicos
+  const mtAndamento = useMemo(() => filtered.filter(d => d.statusMT === "Em andamento").length, [filtered]);
+  const mtNaoIniciado = useMemo(() => filtered.filter(d => d.statusMT === "Não iniciado").length, [filtered]);
+  const mrAndamento = useMemo(() => filtered.filter(d => d.statusMR === "Em andamento").length, [filtered]);
+  const insAndamento = useMemo(() => filtered.filter(d => d.statusInsumos === "Em andamento").length, [filtered]);
+
+  // Donuts dinâmicos
+  const buildDonut = (field) => {
+    const counts = {};
+    filtered.forEach(d => { const v = d[field]; if (v) counts[v] = (counts[v] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([name, value], i) => ({ name, value, color: CHART_COLORS[i % CHART_COLORS.length] }));
+  };
+
+  return (
+    <>
+      <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
+        <div style={{ width: 200 }}><FarolSelect label="Patrocinador" value={fPatrocinador} options={["Todos", ...patrocinadores]} onChange={setFPatrocinador} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Key Account" value={fKeyAccount} options={["Todos", ...keyAccounts]} onChange={setFKeyAccount} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Status MT" value={fStatusMT} options={["Todos", ...statusMTOpts]} onChange={setFStatusMT} /></div>
+        {(fPatrocinador !== "Todos" || fKeyAccount !== "Todos" || fStatusMT !== "Todos") && (
+          <button onClick={() => { setFPatrocinador("Todos"); setFKeyAccount("Todos"); setFStatusMT("Todos"); }}
+            style={{ padding: "0 14px", height: 36, borderRadius: 9999, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, fontFamily: font, background: DS.redBg, color: DS.statusRisk, alignSelf: "flex-end" }}>
+            Limpar
+          </button>
+        )}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
+        <OverviewKpi value={mtAndamento.toLocaleString("pt-BR")} label="MT Em Andamento" color={DS.blue} />
+        <OverviewKpi value={mtNaoIniciado.toLocaleString("pt-BR")} label="MT Não Iniciado" color={DS.amber} />
+        <OverviewKpi value={mrAndamento.toLocaleString("pt-BR")} label="MR Em Andamento" color={DS.blue} />
+        <OverviewKpi value={insAndamento.toLocaleString("pt-BR")} label="Insumos Em Andamento" color={DS.statusActive} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 20 }}>
+        <SectionCard title="Status Medicamento Teste (MT)">
+          <DonutChart data={buildDonut("statusMT")} />
+        </SectionCard>
+        <SectionCard title="Status Medicamento Referência (MR)">
+          <DonutChart data={buildDonut("statusMR")} />
+        </SectionCard>
+        <SectionCard title="Status Insumos Laboratoriais">
+          <DonutChart data={buildDonut("statusInsumos")} />
+        </SectionCard>
+      </div>
+      <SectionCard title="Projetos — Recebimento de Materiais">
+        <DataTable searchKeys={["codigo","codigoRve","projeto","ensaio","rve","variaveisRisco"]}
+          columns={[
+            { key: "codigo", label: "Código" },
+            { key: "patrocinador", label: "Patrocinador" },
+            { key: "projeto", label: "Projeto", maxW: 200 },
+            { key: "etapa", label: "Etapa", render: (v) => <EtapaBadge etapa={v} /> },
+            { key: "statusMT", label: "Status MT", render: (v) => <StatusBadge status={v} /> },
+            { key: "statusMR", label: "Status MR", render: (v) => <StatusBadge status={v} /> },
+            { key: "statusInsumos", label: "Status Insumos", render: (v) => <StatusBadge status={v} /> },
+          ]}
+          rows={filtered}
+        />
       </SectionCard>
-      <SectionCard title="Status Insumos Laboratoriais">
-        <DonutChart data={statusInsumosData} />
-      </SectionCard>
-    </div>
-    <SectionCard title="Projetos — Recebimento de Materiais">
-      <DataTable searchKeys={["codigo","codigoRve","projeto","ensaio","rve","variaveisRisco"]}
-        columns={[
-          { key: "codigo", label: "Código" },
-          { key: "patrocinador", label: "Patrocinador" },
-          { key: "projeto", label: "Projeto", maxW: 200 },
-          { key: "etapa", label: "Etapa", render: (v) => <EtapaBadge etapa={v} /> },
-          { key: "statusMT", label: "Status MT", render: (v) => <StatusBadge status={v} /> },
-          { key: "statusMR", label: "Status MR", render: (v) => <StatusBadge status={v} /> },
-          { key: "statusInsumos", label: "Status Insumos", render: (v) => <StatusBadge status={v} /> },
-        ]}
-        rows={allData}
-      />
-    </SectionCard>
-  </>
-);
+    </>
+  );
+};
 
 const FinanceiroPage = () => {
-  const totalContrato = 66223309;
-  const totalFaturado = 16737709;
-  const pctFaturado = ((totalFaturado / totalContrato) * 100).toFixed(1);
+  const [fPatrocinador, setFPatrocinador] = useState("Todos");
+  const [fStatus, setFStatus] = useState("Todos");
+
+  const patrocinadores = useMemo(() => [...new Set(allFinanceiro.map(d => d.patrocinador).filter(Boolean))].sort(), []);
+  const statuses = useMemo(() => [...new Set(allFinanceiro.map(d => d.statusFaturamento).filter(Boolean))].sort(), []);
+
+  const filtered = useMemo(() => allFinanceiro.filter(d =>
+    (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
+    (fStatus === "Todos" || d.statusFaturamento === fStatus)
+  ), [fPatrocinador, fStatus]);
+
+  // KPIs dinâmicos
+  const totalContrato = useMemo(() => filtered.reduce((s, d) => s + (d.totalContrato || 0), 0), [filtered]);
+  const totalFaturado = useMemo(() => filtered.filter(d => d.tipo === "Faturado").reduce((s, d) => s + (d.valorParcela || 0), 0), [filtered]);
   const pendente = totalContrato - totalFaturado;
+  const pctFaturado = totalContrato > 0 ? ((totalFaturado / totalContrato) * 100).toFixed(1) : "0,0";
 
   const fatPorPatrocinador = useMemo(() => {
     const map = {};
-    allFinanceiro.forEach(r => {
+    filtered.forEach(r => {
       if (!r.patrocinador) return;
       if (!map[r.patrocinador]) map[r.patrocinador] = { name: r.patrocinador, total: 0, faturado: 0 };
       map[r.patrocinador].total += r.totalContrato;
       if (r.tipo === "Faturado") map[r.patrocinador].faturado += r.valorParcela;
     });
     return Object.values(map).sort((a, b) => b.total - a.total).slice(0, 10);
-  }, []);
+  }, [filtered]);
+
+  // Donut dinâmico
+  const donutFat = useMemo(() => {
+    const counts = {};
+    filtered.forEach(d => { const s = d.statusFaturamento; if (s) counts[s] = (counts[s] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([name, value], i) => ({ name, value, color: CHART_COLORS[i % CHART_COLORS.length] }));
+  }, [filtered]);
+
+  const fmtMoeda = (v) => v >= 1e6
+    ? "R$ " + (v / 1e6).toFixed(1).replace(".", ",") + "M"
+    : "R$ " + (v / 1e3).toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ".") + "k";
 
   return (
     <>
+      <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
+        <div style={{ width: 200 }}><FarolSelect label="Patrocinador" value={fPatrocinador} options={["Todos", ...patrocinadores]} onChange={setFPatrocinador} /></div>
+        <div style={{ width: 200 }}><FarolSelect label="Status Faturamento" value={fStatus} options={["Todos", ...statuses]} onChange={setFStatus} /></div>
+        {(fPatrocinador !== "Todos" || fStatus !== "Todos") && (
+          <button onClick={() => { setFPatrocinador("Todos"); setFStatus("Todos"); }}
+            style={{ padding: "0 14px", height: 36, borderRadius: 9999, border: "none", cursor: "pointer", fontSize: 13, fontWeight: 500, fontFamily: font, background: DS.redBg, color: DS.statusRisk, alignSelf: "flex-end" }}>
+            Limpar
+          </button>
+        )}
+      </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 20 }}>
-        <OverviewKpi value={"R$ " + (totalContrato / 1e6).toFixed(1).replace(".", ",") + "M"} label="Total Contratado" color={DS.greenDark} />
-        <OverviewKpi value={"R$ " + (totalFaturado / 1e6).toFixed(1).replace(".", ",") + "M"} label="Total Faturado" color={DS.statusActive} />
-        <OverviewKpi value={"R$ " + (pendente / 1e6).toFixed(1).replace(".", ",") + "M"} label="Pendente de Faturamento" color={DS.statusRisk} />
-        <OverviewKpi value={pctFaturado.replace(".", ",") + "%"} label="% Faturado" color={DS.blue} />
+        <OverviewKpi value={fmtMoeda(totalContrato)} label="Total Contratado" color="#d97706" />
+        <OverviewKpi value={fmtMoeda(totalFaturado)} label="Total Faturado" color="#d97706" />
+        <OverviewKpi value={fmtMoeda(pendente)} label="Pendente de Faturamento" color="#d97706" />
+        <OverviewKpi value={pctFaturado.replace(".", ",") + "%"} label="% Faturado" color="#d97706" />
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <SectionCard title="Status de Faturamento">
-          <DonutChart data={statusFaturamento} />
+          <DonutChart data={donutFat} />
         </SectionCard>
         <SectionCard title="Top 10 Patrocinadores por Valor Contratado">
           <ResponsiveContainer width="100%" height={340}>
@@ -2076,7 +2463,7 @@ const FinanceiroPage = () => {
             { key: "totalContrato", label: "Valor Contrato", render: (v) => v ? "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "-" },
             { key: "valorParcela", label: "Valor Parcela", render: (v) => v ? "R$ " + v.toLocaleString("pt-BR", { minimumFractionDigits: 2 }) : "-" },
           ]}
-          rows={allFinanceiro}
+          rows={filtered}
         />
       </SectionCard>
     </>
@@ -2125,8 +2512,42 @@ const PAGES = [
 ];
 
 export default function SynviaDashboard() {
+  const isAuthenticated = useIsAuthenticated();
+  const { accounts, instance } = useMsal();
+
+  // Dados do usuário logado
+  const user = accounts[0] || null;
+  const displayName = user?.name || "";
+  const nameParts = displayName.split(" ").filter(Boolean);
+  const firstName = nameParts[0] || "";
+  const lastName = nameParts[nameParts.length - 1] || "";
+  const initials = (firstName[0] || "") + (lastName[0] || "");
+  const shortName = nameParts.length > 1 ? `${firstName} ${lastName}` : firstName;
+
   const [page, setPage] = useState("farol");
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar-collapsed") === "true");
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Reage a mudanças nos dados
+  useDataRefresh();
+
+  // Buscar dados frescos ao abrir + polling a cada 1h
+  useEffect(() => {
+    if (!isAuthenticated) return;
+    fetchFreshData();
+    const interval = setInterval(() => fetchFreshData(), 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [isAuthenticated]);
+
+  // Botão de refresh manual
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await fetchFreshData(true);
+    setRefreshing(false);
+  }, []);
+
+  // Se não autenticado, mostra tela de login
+  if (!isAuthenticated) return <LoginPage />;
 
   const pageTitle = {
     farol: "Farol",
@@ -2177,7 +2598,7 @@ export default function SynviaDashboard() {
         </div>
 
         {/* Menu items */}
-        <div style={{ flex: 1, paddingTop: 6, overflowY: "auto", overflowX: "hidden" }}>
+        <div className="sidebar-scroll" style={{ flex: 1, paddingTop: 6, overflowY: "auto", overflowX: "hidden" }}>
           {PAGES.map((p) => {
             if (p.separator) return (
               <div key={p.id} style={{ padding: "0 16px", margin: "8px 0" }}>
@@ -2235,18 +2656,29 @@ export default function SynviaDashboard() {
           })}
         </div>
 
-        {/* Footer: usuário */}
+        {/* Footer: usuário logado */}
         <div style={{ padding: "12px 16px", borderTop: "1px solid rgba(255,255,255,0.1)", flexShrink: 0 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10, justifyContent: collapsed ? "center" : "flex-start" }}>
             <div style={{
               width: 32, height: 32, borderRadius: "50%", background: "rgba(255,255,255,0.12)",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 12, fontWeight: 600, color: "rgb(200,220,210)", flexShrink: 0,
-            }}>SB</div>
+              textTransform: "uppercase",
+            }}>{initials}</div>
             {!collapsed && (
-              <div style={{ overflow: "hidden" }}>
-                <div style={{ fontSize: 14, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Suzy Bernardes</div>
-                <div style={{ fontSize: 10, color: "rgba(200,220,210,0.5)" }}>v1.0.0</div>
+              <div style={{ overflow: "hidden", flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{shortName}</div>
+                <button
+                  onClick={() => instance.logoutRedirect()}
+                  style={{
+                    background: "none", border: "none", cursor: "pointer", padding: 0,
+                    fontSize: 11, color: "rgba(200,220,210,0.5)", fontWeight: 400,
+                  }}
+                  onMouseEnter={(e) => { e.currentTarget.style.color = "#fff"; }}
+                  onMouseLeave={(e) => { e.currentTarget.style.color = "rgba(200,220,210,0.5)"; }}
+                >
+                  Sair
+                </button>
               </div>
             )}
           </div>
@@ -2276,6 +2708,39 @@ export default function SynviaDashboard() {
             <path d="m9 18 6-6-6-6" />
           </svg>
           <span style={{ fontSize: 14, fontWeight: 500, color: "#111827" }}>{pageTitle[page]}</span>
+          <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9ca3af" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/>
+            </svg>
+            <span style={{ fontSize: 12, color: "#9ca3af", fontWeight: 400 }}>
+              Atualizado em {(() => {
+                const d = new Date(metadata.syncedAt);
+                const pad = (n) => String(n).padStart(2, "0");
+                return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} às ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+              })()}
+            </span>
+            <button
+              onClick={handleRefresh}
+              disabled={refreshing}
+              title="Atualizar dados do SharePoint"
+              style={{
+                background: "none", border: "1px solid #e5e7eb", borderRadius: 6,
+                cursor: refreshing ? "wait" : "pointer", padding: "3px 8px",
+                display: "flex", alignItems: "center", gap: 4,
+                fontSize: 11, color: "#6b7280", fontWeight: 500,
+                transition: "all 0.2s",
+              }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = "#f3f4f6"; e.currentTarget.style.borderColor = "#d1d5db"; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "none"; e.currentTarget.style.borderColor = "#e5e7eb"; }}
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"
+                style={{ animation: refreshing ? "spin 1s linear infinite" : "none" }}>
+                <path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/>
+                <path d="M21 3v5h-5"/>
+              </svg>
+              {refreshing ? "Atualizando..." : "Atualizar"}
+            </button>
+          </div>
         </header>
 
         {/* Conteúdo com scroll */}
