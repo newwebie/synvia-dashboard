@@ -1,0 +1,60 @@
+/* Importa o CSS compilado da lib ui/ com todos os utilitários Tailwind */
+@import "../ui/dist/index.css";
+
+/* Sobrescreve variáveis para o tema Synvia Backoffice (verde) */
+:root {
+  /* Marca */
+  --primary: 150 70% 18%;           /* #0C4B29 — Verde escuro Synvia */
+  --primary-foreground: 0 0% 100%;
+
+  /* Secundária */
+  --secondary: 140 30% 95%;
+  --secondary-foreground: 150 40% 20%;
+
+  /* Feedback */
+  --success: 158 71% 27%;
+  --success-foreground: 0 0% 100%;
+  --destructive: 0 84% 60%;
+  --destructive-foreground: 0 0% 100%;
+  --warning: 38 92% 50%;
+  --warning-foreground: 0 0% 100%;
+
+  /* Neutros */
+  --background: 0 0% 100%;
+  --foreground: 222 47% 11%;
+  --muted: 210 40% 96%;
+  --muted-foreground: 215 16% 47%;
+  --accent: 210 40% 96%;
+  --accent-foreground: 222 47% 11%;
+
+  /* Bordas e Inputs */
+  --border: 214 32% 91%;
+  --input: 214 32% 91%;
+  --ring: 150 70% 18%;
+
+  /* Cards e Popovers */
+  --card: 0 0% 100%;
+  --card-foreground: 222 47% 11%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 222 47% 11%;
+
+  /* App background */
+  --app-bg: 220 14% 96%;
+
+  /* Sidebar */
+  --sidebar-bg: 170 65% 12%;        /* #082423 */
+  --sidebar-bg-hover: 160 46% 33%;  /* #2E7C65 */
+  --sidebar-bg-active: 145 67% 39%; /* #21A84E */
+  --sidebar-text: 0 0% 100%;
+  --sidebar-text-muted: 160 20% 82%;
+  --sidebar-accent: 145 67% 39%;
+
+  /* Raio padrão */
+  --radius: 0.5rem;
+}
+
+/* Reset mínimo */
+* {
+  margin: 0;
+  padding: 0;
+}

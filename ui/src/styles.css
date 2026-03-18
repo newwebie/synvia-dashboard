@@ -1,0 +1,104 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --success: 141 64% 46%;
+    --success-foreground: 0 0 100%;
+
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 20% 98%;
+
+    --available: 221 84% 87%;
+    --available-foreground: 221 41% 34%;
+
+    --finished: 80 94% 87%;
+    --finished-foreground: 80 48% 26%;
+
+    --processing: 28 88% 80%;
+    --processing-foreground: 27 78% 25%;
+
+    --analysis: 57 98% 78%;
+    --analysis-foreground: 57 50% 24%;
+
+    --selected: 28 88% 80%;
+    --selected-foreground: 27 78% 25%;
+
+    --notSelected: 142 76% 84%;
+    --notSelected-foreground: 142 55% 32%;
+
+    --substituted: 221 84% 87%;
+    --substituted-foreground: 221 41% 34%;
+
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.9%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 3.9%;
+
+    --drawer: 237 82% 11%;
+    --drawer-foreground: 0 0 100%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 3.9%;
+
+    --primary: 237 82% 11%;
+    --primary-foreground: 0 0% 98%;
+
+    --secondary: 191 100% 98%;
+    --secondary-foreground: 0 0% 9%;
+
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+
+    --accent: 0 0% 96.1%;
+    --accent-foreground: 0 0% 9%;
+
+    --border: 0 0% 89.8%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 3.9%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    --background: 0 0% 3.9%;
+    --foreground: 0 0% 98%;
+
+    --card: 0 0% 3.9%;
+    --card-foreground: 0 0% 98%;
+
+    --popover: 0 0% 3.9%;
+    --popover-foreground: 0 0% 98%;
+
+    --primary: 237 82% 11%;
+    --primary-foreground: 0 0% 9%;
+
+    --secondary: 0 0% 14.9%;
+    --secondary-foreground: 0 0% 98%;
+
+    --muted: 0 0% 14.9%;
+    --muted-foreground: 0 0% 63.9%;
+
+    --accent: 0 0% 14.9%;
+    --accent-foreground: 0 0% 98%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 0 0% 14.9%;
+    --input: 0 0% 14.9%;
+    --ring: 0 0% 83.1%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
