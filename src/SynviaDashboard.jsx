@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from "react";
+import { useState, useMemo, useEffect, useCallback, createContext, useContext } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, CartesianGrid, AreaChart, Area, Treemap, RadarChart, Radar, PolarGrid, PolarAngleAxis, PolarRadiusAxis } from "recharts";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 import LoginPage from "./auth/LoginPage";
@@ -8,38 +8,55 @@ import entregaveisFallback from "./data/entregaveis.json";
 import financeiroFallback from "./data/financeiro.json";
 import metadataFallback from "./data/metadata.json";
 
-// Variáveis reativas — atualizadas pelo fetch dinâmico
-let entregaveis = entregaveisFallback;
-let financeiro = financeiroFallback;
-let metadata = metadataFallback;
+// ── Context de dados ──
+// Fonte única de verdade. Todo componente lê daqui via useData().
+// Quando os dados mudam, o React re-renderiza os consumidores automaticamente.
+const DataContext = createContext(null);
 
-// Listeners para notificar componentes quando os dados mudam
-const dataListeners = new Set();
-function onDataChange(fn) { dataListeners.add(fn); return () => dataListeners.delete(fn); }
-function notifyDataChange() { dataListeners.forEach((fn) => fn()); }
-
-/** Busca dados frescos da API */
-async function fetchFreshData(force = false) {
-  try {
-    const url = force ? "/api/data?fresh=1" : "/api/data";
-    const res = await fetch(url);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-    entregaveis = data.entregaveis;
-    financeiro = data.financeiro;
-    metadata = { lastModified: data.lastModified, syncedAt: data.syncedAt };
-    notifyDataChange();
-    return true;
-  } catch (err) {
-    console.warn("Falha ao buscar dados da API, usando fallback:", err.message);
-    return false;
-  }
+function useData() {
+  const ctx = useContext(DataContext);
+  if (!ctx) throw new Error("useData deve ser usado dentro de <DataProvider>");
+  return ctx;
 }
 
-/** Hook para forçar re-render quando dados mudam */
-function useDataRefresh() {
-  const [, setTick] = useState(0);
-  useEffect(() => onDataChange(() => setTick((t) => t + 1)), []);
+function DataProvider({ children }) {
+  const [entregaveis, setEntregaveis] = useState(entregaveisFallback);
+  const [financeiro, setFinanceiro] = useState(financeiroFallback);
+  const [metadata, setMetadata] = useState(metadataFallback);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const refresh = useCallback(async (force = false) => {
+    try {
+      if (force) setRefreshing(true);
+      const url = force ? "/api/data?fresh=1" : "/api/data";
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setEntregaveis(data.entregaveis);
+      setFinanceiro(data.financeiro);
+      setMetadata({ lastModified: data.lastModified, syncedAt: data.syncedAt });
+      return true;
+    } catch (err) {
+      console.warn("Falha ao buscar dados da API, usando fallback:", err.message);
+      return false;
+    } finally {
+      if (force) setRefreshing(false);
+    }
+  }, []);
+
+  // Busca inicial + polling a cada 1h
+  useEffect(() => {
+    refresh();
+    const interval = setInterval(() => refresh(), 60 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, [refresh]);
+
+  const value = useMemo(
+    () => ({ entregaveis, financeiro, metadata, refresh, refreshing }),
+    [entregaveis, financeiro, metadata, refresh, refreshing]
+  );
+
+  return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }
 
 // ═══════════════════════════════════════════
@@ -242,10 +259,6 @@ const statusPatrocinador = [
   { name: "Não Aplicável", value: 33, color: CHART_COLORS[4] },
 ];
 
-// Dados da tabela — importados do JSON extraído da sheet Entregáveis do NEW_BD (2).xlsm
-const allData = entregaveis;
-const allFinanceiro = financeiro;
-
 // INSUMOS — Status MT, MR e Insumos
 const statusMT = [
   { name: "Concluído Dentro do Prazo", value: 1097, color: CHART_COLORS[0] },
@@ -398,8 +411,8 @@ const SectionCard = ({ title, subtitle, children, flex }) => (
     flex: flex || "1 1 0", display: "flex", flexDirection: "column",
   }}>
     {title && (
-      <div style={{ padding: "20px 24px 0" }}>
-        <div style={{ fontSize: 16, fontWeight: 600, color: DS.text }}>{title}</div>
+      <div style={{ padding: "12px 24px", background: DS.greenBg100, borderRadius: "12px 12px 0 0" }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: DS.greenDark }}>{title}</div>
         {subtitle && <div style={{ fontSize: 13, color: DS.textMuted, marginTop: 2 }}>{subtitle}</div>}
       </div>
     )}
@@ -772,21 +785,22 @@ function paginationRange(current, total) {
 // ═══════════════════════════════════════════
 
 const ProtocolosPage = () => {
+  const { entregaveis: allData } = useData();
   const [anoTep, setAnoTep] = useState("2026");
   const [fStatusProt, setFStatusProt] = useState("Todos");
   const [fEtapa, setFEtapa] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
-  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), [allData]);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
 
   // Universo filtrado por ano TEP e Key Account
   const byAno = useMemo(() => allData.filter(d =>
     d.tepAno === parseInt(anoTep) &&
     (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
-  ), [anoTep, fKeyAccount]);
+  ), [allData, anoTep, fKeyAccount]);
 
   const statusProts = useMemo(() => [...new Set(byAno.map(d => d.statusProtocolo).filter(Boolean))].sort(), [byAno]);
   const etapas = useMemo(() => [...new Set(byAno.map(d => d.etapa).filter(Boolean))].sort(), [byAno]);
@@ -913,20 +927,21 @@ const ProtocolosPage = () => {
 };
 
 const AnalisesPage = () => {
+  const { entregaveis: allData } = useData();
   const [fFarol, setFFarol] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
   const [fAno, setFAno] = useState("Todos");
-  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
-  const farois = useMemo(() => [...new Set(allData.map(d => d.farolAnalises).filter(Boolean))].sort(), []);
-  const pats = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), [allData]);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
+  const farois = useMemo(() => [...new Set(allData.map(d => d.farolAnalises).filter(Boolean))].sort(), [allData]);
+  const pats = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), [allData]);
   const filtered = useMemo(() => allData.filter(d =>
     (fFarol === "Todos" || d.farolAnalises === fFarol) &&
     (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
     (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
     (fAno === "Todos" || d.tepAno === parseInt(fAno))
-  ), [fFarol, fPatrocinador, fKeyAccount, fAno]);
+  ), [allData, fFarol, fPatrocinador, fKeyAccount, fAno]);
 
   const kpiAtrasado = useMemo(() => filtered.filter(d => d.farolAnalises === "Atrasado").length, [filtered]);
   const kpiAndamento = useMemo(() => filtered.filter(d => d.farolAnalises === "Em andamento").length, [filtered]);
@@ -991,14 +1006,15 @@ const AnalisesPage = () => {
 };
 
 const DocTecnicaPage = () => {
+  const { entregaveis: allData } = useData();
   const [anoDT, setAnoDT] = useState("2026");
   const [fMonitoria, setFMonitoria] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
-  const anos = useMemo(() => [...new Set(allData.map(d => d.dataPrevTerminoDTAno).filter(Boolean))].sort(), []);
-  const monitorias = useMemo(() => [...new Set(allData.map(d => d.monitoriaDT).filter(v => v && v !== "NA"))].sort(), []);
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.dataPrevTerminoDTAno).filter(Boolean))].sort(), [allData]);
+  const monitorias = useMemo(() => [...new Set(allData.map(d => d.monitoriaDT).filter(v => v && v !== "NA"))].sort(), [allData]);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: DT pendente no ano selecionado
@@ -1010,7 +1026,7 @@ const DocTecnicaPage = () => {
       (fMonitoria === "Todos" || d.monitoriaDT === fMonitoria) &&
       (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [anoDT, fMonitoria, fKeyAccount]);
+  }, [allData, anoDT, fMonitoria, fKeyAccount]);
 
   // Universo expandido para gráfico (inclui Não iniciado)
   const prevBarras = useMemo(() => {
@@ -1022,7 +1038,7 @@ const DocTecnicaPage = () => {
       month: nomeMes[i + 1],
       value: base.filter(d => d.dataPrevTerminoDTMes === i + 1).length,
     }));
-  }, [anoDT]);
+  }, [allData, anoDT]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(pendentes.map(d => d.codigoRve).filter(Boolean)).size, [pendentes]);
@@ -1102,14 +1118,15 @@ const DocTecnicaPage = () => {
 };
 
 const GarantiaQualidadePage = () => {
+  const { entregaveis: allData } = useData();
   const [anoGQ, setAnoGQ] = useState("2026");
   const [fMonitoria, setFMonitoria] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
-  const anos = useMemo(() => [...new Set(allData.map(d => d.dataPrevTerminoGQAno).filter(Boolean))].sort(), []);
-  const monitorias = useMemo(() => [...new Set(allData.map(d => d.monitoriaGQ).filter(v => v && v !== "NA"))].sort(), []);
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.dataPrevTerminoGQAno).filter(Boolean))].sort(), [allData]);
+  const monitorias = useMemo(() => [...new Set(allData.map(d => d.monitoriaGQ).filter(v => v && v !== "NA"))].sort(), [allData]);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: GQ pendente (não finalizada, não NA)
@@ -1120,7 +1137,7 @@ const GarantiaQualidadePage = () => {
       (fMonitoria === "Todos" || d.monitoriaGQ === fMonitoria) &&
       (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [anoGQ, fMonitoria, fKeyAccount]);
+  }, [allData, anoGQ, fMonitoria, fKeyAccount]);
 
   // Universo expandido para gráfico (inclui não iniciado)
   const prevBarras = useMemo(() => {
@@ -1132,7 +1149,7 @@ const GarantiaQualidadePage = () => {
       month: nomeMes[i + 1],
       value: base.filter(d => d.dataPrevTerminoGQMes === i + 1).length,
     }));
-  }, [anoGQ]);
+  }, [allData, anoGQ]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(pendentes.map(d => d.codigoRve).filter(Boolean)).size, [pendentes]);
@@ -1246,12 +1263,13 @@ const MonitoriaCheckbox = ({ label, checked, onChange }) => (
 );
 
 const SinebPage = () => {
+  const { entregaveis: allData } = useData();
   const [anoSineb, setAnoSineb] = useState("2026");
   const [fPat, setFPat] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
 
-  const anos = useMemo(() => [...new Set(allData.map(d => d.dataEnvioPatAno).filter(Boolean))].sort(), []);
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.dataEnvioPatAno).filter(Boolean))].sort(), [allData]);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: envio ao patrocinador no ano, SINEB não fechado, projeto ativo
@@ -1262,7 +1280,7 @@ const SinebPage = () => {
       !["Concluído", "Cancelado", "Stand by"].includes(d.statusProjeto) &&
       (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [anoSineb, fKeyAccount]);
+  }, [allData, anoSineb, fKeyAccount]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(pendentes.map(d => d.codigoRve).filter(Boolean)).size, [pendentes]);
@@ -1399,9 +1417,10 @@ const CollapsibleFilter = ({ title, count, options, selected, onToggle, defaultO
 };
 
 const MonitoriasPage = () => {
+  const { entregaveis: allData } = useData();
   const [fPat, setFPat] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
   const [dtFilters, setDtFilters] = useState(["1.Em fila", "2.Em conferência", "3.Monitoria Lab", "4.Em conferência retorno de monitoria"]);
   const [gqFilters, setGqFilters] = useState(["3.Monitoria DT/LAB", "4.Monitoria DT", "5.Monitoria Lab"]);
   const [patFilters, setPatFilters] = useState(["2. Monitoria DT", "3.Monitoria Lab"]);
@@ -1421,11 +1440,11 @@ const MonitoriasPage = () => {
       (patFilters.length > 0 && patFilters.includes(d.monitoriaPatrocinador))) &&
       (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
-  }, [dtFilters, gqFilters, patFilters, fKeyAccount]);
+  }, [allData, dtFilters, gqFilters, patFilters, fKeyAccount]);
 
-  const countDT = useMemo(() => allData.filter(d => dtFilters.includes(d.monitoriaDT)).length, [dtFilters]);
-  const countGQ = useMemo(() => allData.filter(d => gqFilters.includes(d.monitoriaGQ)).length, [gqFilters]);
-  const countPat = useMemo(() => allData.filter(d => patFilters.includes(d.monitoriaPatrocinador)).length, [patFilters]);
+  const countDT = useMemo(() => allData.filter(d => dtFilters.includes(d.monitoriaDT)).length, [allData, dtFilters]);
+  const countGQ = useMemo(() => allData.filter(d => gqFilters.includes(d.monitoriaGQ)).length, [allData, gqFilters]);
+  const countPat = useMemo(() => allData.filter(d => patFilters.includes(d.monitoriaPatrocinador)).length, [allData, patFilters]);
 
   return (
     <>
@@ -1494,12 +1513,13 @@ function calcFarolProntidao(d) {
 }
 
 const LaboratorioPage = () => {
+  const { entregaveis: allData } = useData();
   const labEtapas = ["Em Análise", "Aguardando Início Análises"];
   const [fEtapa, setFEtapa] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
   const [fTipo, setFTipo] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
 
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
@@ -1510,13 +1530,13 @@ const LaboratorioPage = () => {
       (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount)
     );
     return fEtapa === "Todos" ? base : base.filter(d => d.etapa === fEtapa);
-  }, [fEtapa, fKeyAccount]);
+  }, [allData, fEtapa, fKeyAccount]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(universo.map(d => d.codigoRve).filter(Boolean)).size, [universo]);
   const totalEntregaveis = universo.length;
-  const emAnalise = useMemo(() => allData.filter(d => d.etapa === "Em Análise").length, []);
-  const aguardando = useMemo(() => allData.filter(d => d.etapa === "Aguardando Início Análises").length, []);
+  const emAnalise = useMemo(() => allData.filter(d => d.etapa === "Em Análise").length, [allData]);
+  const aguardando = useMemo(() => allData.filter(d => d.etapa === "Aguardando Início Análises").length, [allData]);
 
   // Donut por tipo
   const porTipoData = useMemo(() => {
@@ -1614,12 +1634,13 @@ const LaboratorioPage = () => {
 };
 
 const ProximasEntradasPage = () => {
+  const { entregaveis: allData } = useData();
   const [ano, setAno] = useState("2026");
   const [fEtapa, setFEtapa] = useState("Todos");
   const [fPat, setFPat] = useState("Todos");
   const [fStatusMT, setFStatusMT] = useState("Todos");
 
-  const anos = useMemo(() => [...new Set(allData.map(d => d.previstoInicioAno).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.previstoInicioAno).filter(Boolean))].sort(), [allData]);
   const nomeMes = { 1:"Jan",2:"Fev",3:"Mar",4:"Abr",5:"Mai",6:"Jun",7:"Jul",8:"Ago",9:"Set",10:"Out",11:"Nov",12:"Dez" };
 
   // Universo: ano selecionado + farol análises não iniciado/atrasado
@@ -1629,7 +1650,7 @@ const ProximasEntradasPage = () => {
       (d.farolAnalises === "Não iniciado" || d.farolAnalises === "Atrasado") &&
       (fEtapa === "Todos" || d.etapa === fEtapa)
     );
-  }, [ano, fEtapa]);
+  }, [allData, ano, fEtapa]);
 
   const etapas = useMemo(() => {
     const base = allData.filter(d =>
@@ -1637,7 +1658,7 @@ const ProximasEntradasPage = () => {
       (d.farolAnalises === "Não iniciado" || d.farolAnalises === "Atrasado")
     );
     return [...new Set(base.map(d => d.etapa).filter(Boolean))].sort();
-  }, [ano]);
+  }, [allData, ano]);
 
   // KPIs
   const totalProjetos = useMemo(() => new Set(universo.map(d => d.codigoRve).filter(Boolean)).size, [universo]);
@@ -1736,16 +1757,17 @@ const ProximasEntradasPage = () => {
 };
 
 const FarolPage = () => {
+  const { entregaveis: allData } = useData();
   const [anoTep, setAnoTep] = useState("2026");
   const [mesTep, setMesTep] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
 
-  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), [allData]);
   const meses = ["Todos","1","2","3","4","5","6","7","8","9","10","11","12"];
   const nomeMes = { "1":"Jan","2":"Fev","3":"Mar","4":"Abr","5":"Mai","6":"Jun","7":"Jul","8":"Ago","9":"Set","10":"Out","11":"Nov","12":"Dez" };
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
-  const patrocinadores = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
+  const patrocinadores = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), [allData]);
 
   const filtered = useMemo(() => {
     return allData.filter(d =>
@@ -1754,7 +1776,7 @@ const FarolPage = () => {
       (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
       (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador)
     );
-  }, [anoTep, mesTep, fKeyAccount, fPatrocinador]);
+  }, [allData, anoTep, mesTep, fKeyAccount, fPatrocinador]);
 
   // KPIs
   const kpiProtAprovados = useMemo(() => filtered.filter(d =>
@@ -1883,17 +1905,18 @@ const FarolPage = () => {
 };
 
 const OverviewPage = () => {
+  const { entregaveis: allData, financeiro: allFinanceiro } = useData();
   // KPIs dinâmicos calculados dos dados reais
   const totalEntregaveis = allData.length;
-  const emAndamento = useMemo(() => allData.filter(d => d.statusProjeto === "Em andamento").length, []);
-  const concluidos = useMemo(() => allData.filter(d => d.statusProjeto && d.statusProjeto.includes("Concluído")).length, []);
-  const atrasados = useMemo(() => allData.filter(d => d.farolProtocolo === "Atrasado" || d.farolAnalises === "Atrasado").length, []);
-  const naoIniciados = useMemo(() => allData.filter(d => d.statusProjeto === "Não iniciado").length, []);
-  const totalPatrocinadores = useMemo(() => new Set(allData.map(d => d.patrocinador).filter(Boolean)).size, []);
+  const emAndamento = useMemo(() => allData.filter(d => d.statusProjeto === "Em andamento").length, [allData]);
+  const concluidos = useMemo(() => allData.filter(d => d.statusProjeto && d.statusProjeto.includes("Concluído")).length, [allData]);
+  const atrasados = useMemo(() => allData.filter(d => d.farolProtocolo === "Atrasado" || d.farolAnalises === "Atrasado").length, [allData]);
+  const naoIniciados = useMemo(() => allData.filter(d => d.statusProjeto === "Não iniciado").length, [allData]);
+  const totalPatrocinadores = useMemo(() => new Set(allData.map(d => d.patrocinador).filter(Boolean)).size, [allData]);
 
   // Financeiro dinâmico
-  const totalContrato = useMemo(() => allFinanceiro.reduce((s, d) => s + (d.totalContrato || 0), 0), []);
-  const totalFaturado = useMemo(() => allFinanceiro.filter(d => d.tipo === "Faturado").reduce((s, d) => s + (d.valorParcela || 0), 0), []);
+  const totalContrato = useMemo(() => allFinanceiro.reduce((s, d) => s + (d.totalContrato || 0), 0), [allFinanceiro]);
+  const totalFaturado = useMemo(() => allFinanceiro.filter(d => d.tipo === "Faturado").reduce((s, d) => s + (d.valorParcela || 0), 0), [allFinanceiro]);
   const pctFaturado = totalContrato > 0 ? ((totalFaturado / totalContrato) * 100).toFixed(1) : "0,0";
 
   const fmtMoeda = (v) => "R$ " + (v / 1e6).toFixed(1).replace(".", ",") + "M";
@@ -2136,20 +2159,21 @@ const OverviewPage = () => {
 };
 
 const FinalizacaoPage = () => {
+  const { entregaveis: allData } = useData();
   const [fStatus, setFStatus] = useState("Todos");
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
   const [fAno, setFAno] = useState("Todos");
-  const statuses = useMemo(() => [...new Set(allData.map(d => d.statusPatrocinador).filter(Boolean))].sort(), []);
-  const pats = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
-  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
+  const statuses = useMemo(() => [...new Set(allData.map(d => d.statusPatrocinador).filter(Boolean))].sort(), [allData]);
+  const pats = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), [allData]);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), [allData]);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
   const filtered = useMemo(() => allData.filter(d =>
     (fStatus === "Todos" || d.statusPatrocinador === fStatus) &&
     (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
     (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
     (fAno === "Todos" || d.tepAno === parseInt(fAno))
-  ), [fStatus, fPatrocinador, fKeyAccount, fAno]);
+  ), [allData, fStatus, fPatrocinador, fKeyAccount, fAno]);
 
   const kpiAndamento = useMemo(() => filtered.filter(d => d.statusPatrocinador === "Em andamento").length, [filtered]);
   const kpiForaPrazo = useMemo(() => filtered.filter(d => d.statusPatrocinador && d.statusPatrocinador.includes("Fora do Prazo")).length, [filtered]);
@@ -2216,19 +2240,20 @@ const FinalizacaoPage = () => {
 };
 
 const VisaoTimePage = () => {
+  const { entregaveis: allData } = useData();
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
   const [fAno, setFAno] = useState("Todos");
   const [fStatus, setFStatus] = useState("Todos");
 
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
-  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), []);
-  const statuses = useMemo(() => [...new Set(allData.map(d => d.statusProjeto).filter(Boolean))].sort(), []);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
+  const anos = useMemo(() => [...new Set(allData.map(d => d.tepAno).filter(Boolean))].sort(), [allData]);
+  const statuses = useMemo(() => [...new Set(allData.map(d => d.statusProjeto).filter(Boolean))].sort(), [allData]);
 
   const filtered = useMemo(() => allData.filter(d =>
     (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
     (fAno === "Todos" || d.tepAno === parseInt(fAno)) &&
     (fStatus === "Todos" || d.statusProjeto === fStatus)
-  ), [fKeyAccount, fAno, fStatus]);
+  ), [allData, fKeyAccount, fAno, fStatus]);
 
   // KPIs dinâmicos por Key Account
   const kpiData = useMemo(() => {
@@ -2246,6 +2271,18 @@ const VisaoTimePage = () => {
       .map(([name, value], i) => ({ name, value, color: CHART_COLORS[i % CHART_COLORS.length] }));
   }, [filtered]);
 
+  // KPIs resumo
+  const totalProjetos = useMemo(() => new Set(filtered.map(d => d.codigoRve).filter(Boolean)).size, [filtered]);
+  const totalEntregaveis = filtered.length;
+
+  // Status distribuição
+  const statusData = useMemo(() => {
+    const counts = {};
+    filtered.forEach(d => { const s = d.statusProjeto; if (s) counts[s] = (counts[s] || 0) + 1; });
+    return Object.entries(counts).sort((a, b) => b[1] - a[1])
+      .map(([name, value], i) => ({ name, value, color: CHART_COLORS[i % CHART_COLORS.length] }));
+  }, [filtered]);
+
   return (
     <>
       <div style={{ display: "flex", gap: 16, marginBottom: 20, alignItems: "flex-start" }}>
@@ -2258,13 +2295,12 @@ const VisaoTimePage = () => {
             Limpar
           </button>
         )}
+        <div style={{ flex: 1 }} />
+        <KpiCard value={totalProjetos.toLocaleString("pt-BR")} label="Projetos" color={DS.greenDark} />
+        <KpiCard value={totalEntregaveis.toLocaleString("pt-BR")} label="Entregáveis" color={DS.blue} />
       </div>
-      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-        {kpiData.map((ka) => (
-          <KpiCard key={ka.name} value={ka.value.toLocaleString("pt-BR")} label={ka.name} color={ka.color} />
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <SectionCard title="Projetos por Key Account">
           <ResponsiveContainer width="100%" height={340}>
             <BarChart data={kpiData} layout="vertical" margin={{ left: 20, right: 50, top: 5, bottom: 5 }}>
@@ -2277,10 +2313,32 @@ const VisaoTimePage = () => {
             </BarChart>
           </ResponsiveContainer>
         </SectionCard>
+        <SectionCard title="Distribuição por Status">
+          <DonutChart data={statusData} />
+        </SectionCard>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
         <SectionCard title="Categoria do Ensaio">
           <DonutChart data={categoriaData} />
         </SectionCard>
+        <SectionCard title="Entregáveis por Key Account">
+          <ResponsiveContainer width="100%" height={340}>
+            <BarChart data={kpiData} margin={{ left: 5, right: 5, top: 20, bottom: 40 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={DS.cardBorder} vertical={false} />
+              <XAxis dataKey="name" tick={{ fill: DS.textSecondary, fontSize: 11, fontWeight: 500 }} axisLine={false} tickLine={false} angle={-25} textAnchor="end" height={50} />
+              <YAxis hide />
+              <Tooltip content={<ChartTooltip />} />
+              <Bar dataKey="value" name="Entregáveis" radius={[4, 4, 0, 0]} barSize={28}
+                label={{ position: "top", fill: DS.textSecondary, fontSize: 11, fontWeight: 600, formatter: (v) => v.toLocaleString("pt-BR") }}
+              >
+                {kpiData.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </SectionCard>
       </div>
+
       <SectionCard title="Todos os Projetos — Visão por Responsável">
         <DataTable searchKeys={["codigo","codigoRve","projeto","ensaio","rve","variaveisRisco"]}
           columns={[
@@ -2300,19 +2358,20 @@ const VisaoTimePage = () => {
 };
 
 const InsumosPage = () => {
+  const { entregaveis: allData } = useData();
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
   const [fKeyAccount, setFKeyAccount] = useState("Todos");
   const [fStatusMT, setFStatusMT] = useState("Todos");
 
-  const patrocinadores = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), []);
-  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), []);
-  const statusMTOpts = useMemo(() => [...new Set(allData.map(d => d.statusMT).filter(Boolean))].sort(), []);
+  const patrocinadores = useMemo(() => [...new Set(allData.map(d => d.patrocinador).filter(Boolean))].sort(), [allData]);
+  const keyAccounts = useMemo(() => [...new Set(allData.map(d => d.keyAccount).filter(Boolean))].sort(), [allData]);
+  const statusMTOpts = useMemo(() => [...new Set(allData.map(d => d.statusMT).filter(Boolean))].sort(), [allData]);
 
   const filtered = useMemo(() => allData.filter(d =>
     (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
     (fKeyAccount === "Todos" || d.keyAccount === fKeyAccount) &&
     (fStatusMT === "Todos" || d.statusMT === fStatusMT)
-  ), [fPatrocinador, fKeyAccount, fStatusMT]);
+  ), [allData, fPatrocinador, fKeyAccount, fStatusMT]);
 
   // KPIs dinâmicos
   const mtAndamento = useMemo(() => filtered.filter(d => d.statusMT === "Em andamento").length, [filtered]);
@@ -2377,16 +2436,17 @@ const InsumosPage = () => {
 };
 
 const FinanceiroPage = () => {
+  const { financeiro: allFinanceiro } = useData();
   const [fPatrocinador, setFPatrocinador] = useState("Todos");
   const [fStatus, setFStatus] = useState("Todos");
 
-  const patrocinadores = useMemo(() => [...new Set(allFinanceiro.map(d => d.patrocinador).filter(Boolean))].sort(), []);
-  const statuses = useMemo(() => [...new Set(allFinanceiro.map(d => d.statusFaturamento).filter(Boolean))].sort(), []);
+  const patrocinadores = useMemo(() => [...new Set(allFinanceiro.map(d => d.patrocinador).filter(Boolean))].sort(), [allFinanceiro]);
+  const statuses = useMemo(() => [...new Set(allFinanceiro.map(d => d.statusFaturamento).filter(Boolean))].sort(), [allFinanceiro]);
 
   const filtered = useMemo(() => allFinanceiro.filter(d =>
     (fPatrocinador === "Todos" || d.patrocinador === fPatrocinador) &&
     (fStatus === "Todos" || d.statusFaturamento === fStatus)
-  ), [fPatrocinador, fStatus]);
+  ), [allFinanceiro, fPatrocinador, fStatus]);
 
   // KPIs dinâmicos
   const totalContrato = useMemo(() => filtered.reduce((s, d) => s + (d.totalContrato || 0), 0), [filtered]);
@@ -2511,9 +2571,9 @@ const PAGES = [
   { id: "visao_time", label: "Visão do Time" },
 ];
 
-export default function SynviaDashboard() {
-  const isAuthenticated = useIsAuthenticated();
+function DashboardShell() {
   const { accounts, instance } = useMsal();
+  const { metadata, refresh, refreshing } = useData();
 
   // Dados do usuário logado
   const user = accounts[0] || null;
@@ -2526,28 +2586,9 @@ export default function SynviaDashboard() {
 
   const [page, setPage] = useState("farol");
   const [collapsed, setCollapsed] = useState(() => localStorage.getItem("sidebar-collapsed") === "true");
-  const [refreshing, setRefreshing] = useState(false);
-
-  // Reage a mudanças nos dados
-  useDataRefresh();
-
-  // Buscar dados frescos ao abrir + polling a cada 1h
-  useEffect(() => {
-    if (!isAuthenticated) return;
-    fetchFreshData();
-    const interval = setInterval(() => fetchFreshData(), 60 * 60 * 1000);
-    return () => clearInterval(interval);
-  }, [isAuthenticated]);
 
   // Botão de refresh manual
-  const handleRefresh = useCallback(async () => {
-    setRefreshing(true);
-    await fetchFreshData(true);
-    setRefreshing(false);
-  }, []);
-
-  // Se não autenticado, mostra tela de login
-  if (!isAuthenticated) return <LoginPage />;
+  const handleRefresh = useCallback(() => refresh(true), [refresh]);
 
   const pageTitle = {
     farol: "Farol",
@@ -2765,5 +2806,15 @@ export default function SynviaDashboard() {
 
       </div>
     </div>
+  );
+}
+
+export default function SynviaDashboard() {
+  const isAuthenticated = useIsAuthenticated();
+  if (!isAuthenticated) return <LoginPage />;
+  return (
+    <DataProvider>
+      <DashboardShell />
+    </DataProvider>
   );
 }
