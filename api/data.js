@@ -1,12 +1,75 @@
 /**
- * Vercel Serverless Function — retorna dados atualizados do SharePoint
+ * Vercel Serverless Function — retorna dados atualizados do SharePoint.
  * Cache CDN de 5 min, revalida em background.
  * Query ?fresh=1 ignora o cache (botão de refresh).
+ *
+ * O mapeamento das colunas é feito por NOME (header), não por índice.
+ * Se a estrutura da planilha for alterada (coluna renomeada/removida),
+ * o handler retorna 422 com payload { error: "SCHEMA_MISMATCH", ... }
+ * para o frontend exibir aviso ao usuário.
  */
 
 import XLSX from "xlsx";
 
 const GRAPH = "https://graph.microsoft.com/v1.0";
+
+// ── Mapeamento: campo no JSON → nome da coluna no Excel ──
+// Qualquer alteração nos nomes abaixo deve ser espelhada na planilha NEW_BD.
+const ENTREGAVEIS_COLS = {
+  keyAccount: "KEY ACCOUNT",
+  patrocinador: "PATROCINADOR",
+  codigoRve: "CÓDIGO RVE",
+  projeto: "PROJETO (ATIVO)",
+  codigo: "CODIFICAÇÃO",
+  categoriaEnsaio: "CATEGORIA DO ENSAIO",
+  tipo: "TIPO",
+  ensaio: "ENSAIO",
+  etapa: "ETAPA DO PROJETO",
+  statusProjeto: "STATUS DO PROJETO",
+  terceirizacao: "TERCEIRIZAÇÃO",
+  bqv: "BQV",
+  statusMT: "STATUS MT",
+  statusMR: "STATUS MR",
+  statusInsumos: "STATUS INSUMOS",
+  dataPrevProtocolo: "DATA PREVISTA DE VERSIONAMENTO DO PROTOCOLO",
+  dataEnvioProtocolo: "DATA DE ENVIO DO PROTOCOLO",
+  statusProtocolo: "STATUS PROTOCOLO",
+  farolProtocolo: "FAROL PROTOCOLO",
+  variaveisRisco: "VARIÁVEIS DE RISCO",
+  previstoInicio: "PREVISTO INÍCIO DAS ANÁLISES",
+  dataRealInicio: "DATA REAL DE INÍCIO DAS ANÁLISES",
+  dataPrevEnvioResultados: "DATA PREVISTA DE ENVIO DOS RESULTADOS",
+  farolAnalises: "FAROL ANÁLISES",
+  dataInicioDT: "DATA INÍCIO DT",
+  dataPrevTerminoDT: "DATA PREVISTA DE TÉRMINO DT",
+  monitoriaDT: "MONITORIA DT",
+  statusDT: "STATUS DT",
+  dataInicioGQ: "DATA INÍCIO GQ",
+  dataPrevTerminoGQ: "DATA PREVISTA TÉRMINO GQ",
+  monitoriaGQ: "MONITORIA GQ",
+  statusGQ: "STATUS GQ",
+  dataEnvioPatrocinador: "DATA DE ENVIO AO PATROCINADOR",
+  monitoriaPatrocinador: "MONITORIA PATROCINADOR",
+  dataAprovacaoPatrocinador: "DATA DE APROVAÇÃO DO PATROCINADOR",
+  dataSineb: "DATA DE FECHAMENTO DO SINEB",
+  statusPatrocinador: "STATUS PATROCINADOR",
+  tep: "TEP - FINAL DO PROJETO",
+  statusPrazoFinal: "STATUS PRAZO DE FINALIZAÇÃO",
+};
+
+const FINANCEIRO_COLS = {
+  keyAccount: "KEY ACCOUNT",
+  patrocinador: "PATROCINADOR",
+  projeto: "PROJETO (ATIVO)",
+  statusFaturamento: "STATUS FATURAMENTO",
+  rve: "RVE",
+  qtdeParcelas: "QTDE PARCELAS FATURADAS",
+  tipo: "TIPO",
+  parcelaPendente: "PARCELA PENDENTE",
+  totalContrato: "TOTAL CONTRATO",
+  valorParcela: "VALOR DA PARCELA",
+  pctFaturado: "% FATURADO",
+};
 
 // ── Auth ──
 async function getAccessToken() {
@@ -53,7 +116,7 @@ async function downloadFile(token) {
   return { buffer, lastModified };
 }
 
-// ── Extração ──
+// ── Conversões de data ──
 function excelDate(val) {
   if (!val || typeof val !== "number") return "";
   const d = new Date((val - 25569) * 86400000);
@@ -62,62 +125,142 @@ function excelDate(val) {
 function excelYear(val) { if (!val || typeof val !== "number") return null; return new Date((val - 25569) * 86400000).getUTCFullYear(); }
 function excelMonth(val) { if (!val || typeof val !== "number") return null; return new Date((val - 25569) * 86400000).getUTCMonth() + 1; }
 
+// ── Mapeamento por nome de coluna ──
+const normalizeHeader = (s) => String(s || "").trim().toUpperCase();
+
+/**
+ * Resolve os índices das colunas a partir da linha de cabeçalho.
+ * Lança erro com code "SCHEMA_MISMATCH" se alguma coluna esperada não existir.
+ */
+function buildColumnIndex(headerRow, requiredCols, sheetName) {
+  const headerIndex = {};
+  (headerRow || []).forEach((v, idx) => {
+    const key = normalizeHeader(v);
+    if (key && headerIndex[key] === undefined) headerIndex[key] = idx;
+  });
+
+  const col = {};
+  const missing = [];
+  for (const [field, header] of Object.entries(requiredCols)) {
+    const idx = headerIndex[normalizeHeader(header)];
+    if (idx === undefined) missing.push(header);
+    else col[field] = idx;
+  }
+
+  if (missing.length > 0) {
+    const err = new Error(
+      `Colunas esperadas não foram encontradas na sheet "${sheetName}": ${missing.join(", ")}`
+    );
+    err.code = "SCHEMA_MISMATCH";
+    err.sheet = sheetName;
+    err.missingColumns = missing;
+    throw err;
+  }
+  return col;
+}
+
+function throwSheetMissing(sheetName) {
+  const err = new Error(`Sheet "${sheetName}" não encontrada na planilha.`);
+  err.code = "SCHEMA_MISMATCH";
+  err.sheet = sheetName;
+  err.missingColumns = [];
+  throw err;
+}
+
+// ── Extração ──
 function extractEntregaveis(wb) {
   const ws = wb.Sheets["Entregáveis"];
+  if (!ws) throwSheetMissing("Entregáveis");
+
   const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  // Cabeçalho das colunas está na linha 4 (índice 4); dados começam na linha 5.
+  const col = buildColumnIndex(data[4], ENTREGAVEIS_COLS, "Entregáveis");
   const rows = data.slice(5);
+
   const result = [];
   for (const r of rows) {
-    const codigo = (r[4] || "").toString().trim();
-    const pat = (r[1] || "").toString().trim();
+    const codigo = (r[col.codigo] || "").toString().trim();
+    const pat = (r[col.patrocinador] || "").toString().trim();
     if (!codigo && !pat) continue;
-    let sp = (r[49] || "").toString().trim().replace(/^\d+\.\s*/, "");
+
+    const sp = (r[col.statusProtocolo] || "").toString().trim().replace(/^\d+\.\s*/, "");
     result.push({
-      keyAccount: (r[0] || "").toString().trim(), patrocinador: pat, codigo,
-      codigoRve: (r[2] || "").toString().trim(), projeto: (r[3] || "").toString().trim(),
-      tipo: (r[6] || "").toString().trim(), categoriaEnsaio: (r[5] || "").toString().trim(),
-      ensaio: (r[10] || "").toString().trim().replace(/\r?\n/g, " ").substring(0, 120),
-      etapa: (r[11] || "").toString().trim(), statusProjeto: (r[12] || "").toString().trim(),
-      statusMT: (r[24] || "").toString().trim(), statusMR: (r[29] || "").toString().trim(),
-      statusInsumos: (r[34] || "").toString().trim(), terceirizacao: (r[14] || "").toString().trim(),
-      bqv: (r[16] || "").toString().trim(),
-      statusProtocolo: sp, dataPrevProtocolo: excelDate(r[47]), dataEnvioProtocolo: excelDate(r[48]),
-      farolProtocolo: (r[51] || "").toString().trim(), farolAnalises: (r[60] || "").toString().trim(),
-      variaveisRisco: (r[52] || "").toString().trim(),
-      previstoInicioData: excelDate(r[54]), previstoInicioAno: excelYear(r[54]), previstoInicioMes: excelMonth(r[54]),
-      dataRealInicio: excelDate(r[56]), dataPrevEnvioResultados: excelDate(r[58]),
-      statusDT: (r[66] || "").toString().trim(), monitoriaDT: (r[64] || "").toString().trim(),
-      dataInicioDT: excelDate(r[62]), dataPrevTerminoDT: excelDate(r[63]),
-      dataPrevTerminoDTAno: excelYear(r[63]), dataPrevTerminoDTMes: excelMonth(r[63]),
-      statusGQ: (r[72] || "").toString().trim(), monitoriaGQ: (r[70] || "").toString().trim(),
-      dataInicioGQ: excelDate(r[68]), dataPrevTerminoGQ: excelDate(r[69]),
-      dataPrevTerminoGQAno: excelYear(r[69]), dataPrevTerminoGQMes: excelMonth(r[69]),
-      monitoriaPatrocinador: (r[75] || "").toString().trim(),
-      statusPatrocinador: (r[79] || "").toString().trim(),
-      dataEnvioPatrocinador: excelDate(r[73]), dataEnvioPatAno: excelYear(r[73]),
-      dataAprovacaoPatrocinador: excelDate(r[76]),
-      tepAno: excelYear(r[80]), tepMes: excelMonth(r[80]),
-      statusPrazoFinal: (r[81] || "").toString().trim(), dataSineb: excelDate(r[78]),
+      keyAccount: (r[col.keyAccount] || "").toString().trim(),
+      patrocinador: pat,
+      codigo,
+      codigoRve: (r[col.codigoRve] || "").toString().trim(),
+      projeto: (r[col.projeto] || "").toString().trim(),
+      tipo: (r[col.tipo] || "").toString().trim(),
+      categoriaEnsaio: (r[col.categoriaEnsaio] || "").toString().trim(),
+      ensaio: (r[col.ensaio] || "").toString().trim().replace(/\r?\n/g, " ").substring(0, 120),
+      etapa: (r[col.etapa] || "").toString().trim(),
+      statusProjeto: (r[col.statusProjeto] || "").toString().trim(),
+      statusMT: (r[col.statusMT] || "").toString().trim(),
+      statusMR: (r[col.statusMR] || "").toString().trim(),
+      statusInsumos: (r[col.statusInsumos] || "").toString().trim(),
+      terceirizacao: (r[col.terceirizacao] || "").toString().trim(),
+      bqv: (r[col.bqv] || "").toString().trim(),
+      statusProtocolo: sp,
+      dataPrevProtocolo: excelDate(r[col.dataPrevProtocolo]),
+      dataEnvioProtocolo: excelDate(r[col.dataEnvioProtocolo]),
+      farolProtocolo: (r[col.farolProtocolo] || "").toString().trim(),
+      farolAnalises: (r[col.farolAnalises] || "").toString().trim(),
+      variaveisRisco: (r[col.variaveisRisco] || "").toString().trim(),
+      previstoInicioData: excelDate(r[col.previstoInicio]),
+      previstoInicioAno: excelYear(r[col.previstoInicio]),
+      previstoInicioMes: excelMonth(r[col.previstoInicio]),
+      dataRealInicio: excelDate(r[col.dataRealInicio]),
+      dataPrevEnvioResultados: excelDate(r[col.dataPrevEnvioResultados]),
+      statusDT: (r[col.statusDT] || "").toString().trim(),
+      monitoriaDT: (r[col.monitoriaDT] || "").toString().trim(),
+      dataInicioDT: excelDate(r[col.dataInicioDT]),
+      dataPrevTerminoDT: excelDate(r[col.dataPrevTerminoDT]),
+      dataPrevTerminoDTAno: excelYear(r[col.dataPrevTerminoDT]),
+      dataPrevTerminoDTMes: excelMonth(r[col.dataPrevTerminoDT]),
+      statusGQ: (r[col.statusGQ] || "").toString().trim(),
+      monitoriaGQ: (r[col.monitoriaGQ] || "").toString().trim(),
+      dataInicioGQ: excelDate(r[col.dataInicioGQ]),
+      dataPrevTerminoGQ: excelDate(r[col.dataPrevTerminoGQ]),
+      dataPrevTerminoGQAno: excelYear(r[col.dataPrevTerminoGQ]),
+      dataPrevTerminoGQMes: excelMonth(r[col.dataPrevTerminoGQ]),
+      monitoriaPatrocinador: (r[col.monitoriaPatrocinador] || "").toString().trim(),
+      statusPatrocinador: (r[col.statusPatrocinador] || "").toString().trim(),
+      dataEnvioPatrocinador: excelDate(r[col.dataEnvioPatrocinador]),
+      dataEnvioPatAno: excelYear(r[col.dataEnvioPatrocinador]),
+      dataAprovacaoPatrocinador: excelDate(r[col.dataAprovacaoPatrocinador]),
+      tepAno: excelYear(r[col.tep]),
+      tepMes: excelMonth(r[col.tep]),
+      statusPrazoFinal: (r[col.statusPrazoFinal] || "").toString().trim(),
+      dataSineb: excelDate(r[col.dataSineb]),
     });
   }
   return result;
 }
 
 function extractFinanceiro(wb) {
-  const wsF = wb.Sheets["Financeiro"];
-  const dataF = XLSX.utils.sheet_to_json(wsF, { header: 1 });
+  const ws = wb.Sheets["Financeiro"];
+  if (!ws) throwSheetMissing("Financeiro");
+
+  const data = XLSX.utils.sheet_to_json(ws, { header: 1 });
+  // Cabeçalho na linha 0; dados começam na linha 1.
+  const col = buildColumnIndex(data[0], FINANCEIRO_COLS, "Financeiro");
+
   const fin = [];
-  for (const r of dataF.slice(6)) {
-    const pat = (r[1] || "").toString().trim();
+  for (const r of data.slice(1)) {
+    const pat = (r[col.patrocinador] || "").toString().trim();
     if (!pat) continue;
     fin.push({
-      keyAccount: (r[0] || "").toString().trim(), patrocinador: pat,
-      projeto: (r[2] || "").toString().trim(), statusFaturamento: (r[3] || "").toString().trim(),
-      rve: (r[4] || "").toString().trim(), qtdeParcelas: (r[6] || "").toString().trim(),
-      tipo: (r[7] || "").toString().trim(), parcelaPendente: typeof r[8] === "number" ? r[8] : 0,
-      totalContrato: typeof r[11] === "number" ? r[11] : 0,
-      valorParcela: typeof r[12] === "number" ? r[12] : 0,
-      pctFaturado: typeof r[13] === "number" ? r[13] : 0,
+      keyAccount: (r[col.keyAccount] || "").toString().trim(),
+      patrocinador: pat,
+      projeto: (r[col.projeto] || "").toString().trim(),
+      statusFaturamento: (r[col.statusFaturamento] || "").toString().trim(),
+      rve: (r[col.rve] || "").toString().trim(),
+      qtdeParcelas: (r[col.qtdeParcelas] || "").toString().trim(),
+      tipo: (r[col.tipo] || "").toString().trim(),
+      parcelaPendente: typeof r[col.parcelaPendente] === "number" ? r[col.parcelaPendente] : 0,
+      totalContrato: typeof r[col.totalContrato] === "number" ? r[col.totalContrato] : 0,
+      valorParcela: typeof r[col.valorParcela] === "number" ? r[col.valorParcela] : 0,
+      pctFaturado: typeof r[col.pctFaturado] === "number" ? r[col.pctFaturado] : 0,
     });
   }
   return fin;
@@ -140,8 +283,8 @@ export default async function handler(req, res) {
       financeiro,
     };
 
-    // Cache CDN: 5 min, serve stale enquanto revalida
-    // ?fresh=1 bypassa o cache (botão de refresh do user)
+    // Cache CDN: 5 min, serve stale enquanto revalida.
+    // ?fresh=1 bypassa o cache (botão de refresh do user).
     const isFresh = req.query?.fresh === "1";
     if (isFresh) {
       res.setHeader("Cache-Control", "no-cache, no-store");
@@ -152,6 +295,19 @@ export default async function handler(req, res) {
     res.status(200).json(payload);
   } catch (error) {
     console.error("Erro no /api/data:", error.message);
-    res.status(500).json({ error: error.message });
+
+    if (error.code === "SCHEMA_MISMATCH") {
+      // 422 Unprocessable Entity — a planilha foi lida mas a estrutura mudou.
+      res.setHeader("Cache-Control", "no-cache, no-store");
+      res.status(422).json({
+        error: "SCHEMA_MISMATCH",
+        message: error.message,
+        sheet: error.sheet,
+        missingColumns: error.missingColumns || [],
+      });
+      return;
+    }
+
+    res.status(500).json({ error: "INTERNAL_ERROR", message: error.message });
   }
 }

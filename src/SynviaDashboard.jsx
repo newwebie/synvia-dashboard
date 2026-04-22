@@ -24,17 +24,32 @@ function DataProvider({ children }) {
   const [financeiro, setFinanceiro] = useState(financeiroFallback);
   const [metadata, setMetadata] = useState(metadataFallback);
   const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState(null);
 
   const refresh = useCallback(async (force = false) => {
     try {
       if (force) setRefreshing(true);
       const url = force ? "/api/data?fresh=1" : "/api/data";
       const res = await fetch(url);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
+      const data = await res.json().catch(() => null);
+
+      // A planilha foi lida, mas a estrutura das colunas foi alterada.
+      if (res.status === 422 && data?.error === "SCHEMA_MISMATCH") {
+        setError({
+          kind: "SCHEMA_MISMATCH",
+          sheet: data.sheet || "",
+          missingColumns: data.missingColumns || [],
+          message: data.message || "",
+        });
+        return false;
+      }
+
+      if (!res.ok || !data) throw new Error(`HTTP ${res.status}`);
+
       setEntregaveis(data.entregaveis);
       setFinanceiro(data.financeiro);
       setMetadata({ lastModified: data.lastModified, syncedAt: data.syncedAt });
+      setError(null);
       return true;
     } catch (err) {
       console.warn("Falha ao buscar dados da API, usando fallback:", err.message);
@@ -52,8 +67,8 @@ function DataProvider({ children }) {
   }, [refresh]);
 
   const value = useMemo(
-    () => ({ entregaveis, financeiro, metadata, refresh, refreshing }),
-    [entregaveis, financeiro, metadata, refresh, refreshing]
+    () => ({ entregaveis, financeiro, metadata, refresh, refreshing, error }),
+    [entregaveis, financeiro, metadata, refresh, refreshing, error]
   );
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
@@ -2571,9 +2586,68 @@ const PAGES = [
   { id: "visao_time", label: "Visão do Time" },
 ];
 
+// Banner exibido quando a planilha do SharePoint teve sua estrutura alterada
+// (colunas renomeadas, removidas ou reordenadas), quebrando o mapeamento da API.
+// Tom corporativo; referencia o aviso prévio à equipe sobre não modificar colunas.
+function SchemaMismatchBanner({ error }) {
+  const missing = error.missingColumns || [];
+  const sheet = error.sheet || "";
+
+  return (
+    <div
+      role="alert"
+      style={{
+        background: "#fef2f2",
+        border: "1px solid #fecaca",
+        borderLeft: "4px solid #dc2626",
+        borderRadius: 8,
+        padding: "16px 20px",
+        marginBottom: 20,
+        display: "flex",
+        gap: 14,
+        alignItems: "flex-start",
+      }}
+    >
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#dc2626" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 2 }}>
+        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+        <line x1="12" x2="12" y1="9" y2="13"/>
+        <line x1="12" x2="12.01" y1="17" y2="17"/>
+      </svg>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ fontSize: 14, fontWeight: 600, color: "#991b1b", marginBottom: 6 }}>
+          Não foi possível atualizar o dashboard — estrutura da planilha alterada
+        </div>
+        <div style={{ fontSize: 13, color: "#7f1d1d", lineHeight: 1.55 }}>
+          A planilha <strong>NEW_BD</strong> foi modificada na aba <strong>{sheet || "—"}</strong> e
+          o dashboard não conseguiu localizar as colunas esperadas. Conforme comunicado anteriormente,
+          qualquer alteração nos cabeçalhos das colunas (renomear, remover ou reordenar) impede a
+          atualização automática dos dados.
+          {missing.length > 0 && (
+            <>
+              <div style={{ marginTop: 10, fontSize: 12, fontWeight: 600, color: "#991b1b" }}>
+                Colunas não encontradas:
+              </div>
+              <ul style={{ margin: "4px 0 0 18px", padding: 0, fontSize: 12, color: "#7f1d1d" }}>
+                {missing.map((c) => (
+                  <li key={c} style={{ marginBottom: 2 }}><code style={{ background: "#fee2e2", padding: "1px 6px", borderRadius: 4, fontSize: 11.5 }}>{c}</code></li>
+                ))}
+              </ul>
+            </>
+          )}
+          <div style={{ marginTop: 12, fontSize: 12.5, color: "#7f1d1d" }}>
+            <strong>Como resolver:</strong> restaure os nomes originais das colunas na planilha do SharePoint
+            e clique novamente em <em>Atualizar</em>. Até lá, o dashboard continua exibindo os últimos dados
+            válidos carregados.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DashboardShell() {
   const { accounts, instance } = useMsal();
-  const { metadata, refresh, refreshing } = useData();
+  const { metadata, refresh, refreshing, error } = useData();
 
   // Dados do usuário logado
   const user = accounts[0] || null;
@@ -2786,6 +2860,9 @@ function DashboardShell() {
 
         {/* Conteúdo com scroll */}
         <div style={{ flex: 1, overflow: "auto", padding: "24px 24px 48px" }}>
+          {error?.kind === "SCHEMA_MISMATCH" && (
+            <SchemaMismatchBanner error={error} />
+          )}
           <h1 style={{ fontSize: 24, fontWeight: 700, color: "#111827", marginBottom: 8 }}>{pageTitle[page]}</h1>
           <div style={{ height: 16 }} />
           {page === "farol" && <FarolPage />}
